@@ -399,21 +399,35 @@ export class App {
   }
 
   private async importFile(file: File): Promise<void> {
-    const buf = await file.arrayBuffer();
-    const tempCtx = new AudioContext();
+    let buf: ArrayBuffer;
     try {
-      const decoded = await tempCtx.decodeAudioData(buf.slice(0));
-      const meta = await this.db.addTrack(file, buf, { duration: decoded.duration, sampleRate: decoded.sampleRate, channels: decoded.numberOfChannels });
-      const pl = this.plMgr.getCurrent();
-      if (pl) await this.plMgr.addTrack(pl.id, meta.id);
+      buf = await file.arrayBuffer();
     } catch (err) {
-      if (err instanceof DOMException && (err.name === 'QuotaExceededError' || err.name === 'NS_ERROR_DOM_QUOTA_REACHED')) {
-        this.showToast('ストレージ容量が不足しています。不要なトラックを削除してください。', true);
-      } else {
-        this.showToast(`「${file.name}」は対応していないファイル形式です`, true);
+      this.showToast(`「${file.name}」の読み取りに失敗しました`, true);
+      return;
+    }
+    // Reuse engine's AudioContext — creating new AudioContext per file is
+    // blocked on iOS Safari and wastes resources.
+    const ctx = this.engine.audioContext;
+    try {
+      const decoded = await ctx.decodeAudioData(buf.slice(0));
+      let pl = this.plMgr.getCurrent();
+      if (!pl) {
+        pl = await this.plMgr.createPlaylist('デフォルト');
       }
-    } finally {
-      await tempCtx.close();
+      const meta = await this.db.addTrack(file, buf, {
+        duration: decoded.duration,
+        sampleRate: decoded.sampleRate,
+        channels: decoded.numberOfChannels,
+      });
+      await this.plMgr.addTrack(pl.id, meta.id);
+    } catch (err) {
+      if (err instanceof DOMException &&
+          (err.name === 'QuotaExceededError' || err.name === 'NS_ERROR_DOM_QUOTA_REACHED')) {
+        this.showToast('ストレージ容量不足です。不要なトラックを削除してください。', true);
+      } else {
+        this.showToast(`「${file.name}」は対応していない形式です`, true);
+      }
     }
   }
 
