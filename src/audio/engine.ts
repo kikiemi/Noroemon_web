@@ -6,6 +6,8 @@ export class AudioEngine {
   private ctx!: AudioContext;
   private pvNode!: AudioWorkletNode;
   private fmNode!: AudioWorkletNode;
+  private fmBypass!: GainNode;
+  private fmEnabled = false;
   private vcNode!: AudioWorkletNode;
   private bcNode!: AudioWorkletNode;
   private mdNode!: AudioWorkletNode;
@@ -20,6 +22,7 @@ export class AudioEngine {
   private bpmWorker: Worker | null = null;
   private micSource: MediaStreamAudioSourceNode | null = null;
   private micStream: MediaStream | null = null;
+  private _silentAudio: HTMLAudioElement | null = null;
   private listeners: EngineEventHandler[] = [];
   private _ready = false;
   private _duration = 0;
@@ -78,8 +81,12 @@ export class AudioEngine {
     this.analyser.fftSize = 2048;
     this.analyser.smoothingTimeConstant = 0.8;
 
+    this.fmBypass = this.ctx.createGain();
+    this.fmBypass.gain.value = 1;
+
+    // Default chain: pvNode -> fmBypass -> vcNode (formant bypassed)
     let node: AudioNode = this.pvNode;
-    node.connect(this.fmNode); node = this.fmNode;
+    node.connect(this.fmBypass); node = this.fmBypass;
     node.connect(this.vcNode); node = this.vcNode;
     for (const eq of this.eqNodes) { node.connect(eq); node = eq; }
     node.connect(this.mdNode); node = this.mdNode;
@@ -94,6 +101,19 @@ export class AudioEngine {
     this.reverbMix.connect(this.masterGain);
     this.masterGain.connect(this.analyser);
     this.analyser.connect(this.ctx.destination);
+
+    // iOS background audio keepalive:
+    // A looping silent <audio> element forces iOS to maintain the Audio
+    // Session so the AudioContext continues when the screen is locked.
+    const sil = document.createElement('audio');
+    // 1-frame silent MP3 as data URI
+    sil.src = 'data:audio/mp3;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU2LjM2LjEwMAAAAAAAAAAAAAAA//OEAAAAAAAAAAAAAAAAAAAAAAAASW5mbwAAAA8AAAAEAAABIADAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV6urq6urq6urq6urq6urq6urq6urq6urq6v////////////////////////////////8AAAAATGF2YzU2LjQxAAAAAAAAAAAAAAAAJAAAAAAAAAAAASDs90hvAAAAAAAAAAAAAAAAAAAA//MUZAAAAAGkAAAAAAAAA0gAAAAATEFN//MUZAMAAAGkAAAAAAAAA0gAAAAARTMu//MUZAYAAAGkAAAAAAAAA0gAAAAAOTku//MUZAkAAAGkAAAAAAAAA0gAAAAANVVV';
+    sil.loop = true;
+    sil.volume = 0.001;
+    sil.setAttribute('playsinline', '');
+    sil.setAttribute('webkit-playsinline', '');
+    document.body.appendChild(sil);
+    this._silentAudio = sil;
 
     this.pvNode.port.onmessage = (e) => {
       const d = e.data;
@@ -145,6 +165,8 @@ export class AudioEngine {
   play(): void {
     if (this.ctx.state === 'suspended') this.ctx.resume();
     this.pvNode.port.postMessage({ type: 'play' });
+    // Start silent audio to keep iOS Audio Session alive in background
+    this._silentAudio?.play().catch(() => {});
   }
   pause(): void { this.pvNode.port.postMessage({ type: 'pause' }); }
   stop(): void { this.pvNode.port.postMessage({ type: 'stop' }); }
@@ -184,7 +206,22 @@ export class AudioEngine {
   setReverse(): void { this.pvNode.port.postMessage({ type: 'reverse' }); }
 
   setFormant(enabled: boolean, pitchSemitones: number): void {
-    const p = this.fmNode.parameters as Map<string, AudioParam>, t = this.ctx.currentTime;
+    if (enabled !== this.fmEnabled) {
+      this.fmEnabled = enabled;
+      if (enabled) {
+        // pvNode -> fmNode -> fmBypass(passthru) -> vcNode
+        try { this.pvNode.disconnect(this.fmBypass); } catch { /* already disconnected */ }
+        this.pvNode.connect(this.fmNode);
+        this.fmNode.connect(this.fmBypass);
+      } else {
+        // pvNode -> fmBypass -> vcNode  (fmNode out of chain)
+        try { this.pvNode.disconnect(this.fmNode); } catch { /* already disconnected */ }
+        try { this.fmNode.disconnect(this.fmBypass); } catch { /* already disconnected */ }
+        this.pvNode.connect(this.fmBypass);
+      }
+    }
+    const p = this.fmNode.parameters as Map<string, AudioParam>;
+    const t = this.ctx.currentTime;
     (p.get('enabled') as AudioParam).setValueAtTime(enabled ? 1 : 0, t);
     (p.get('pitchRatio') as AudioParam).setValueAtTime(Math.pow(2, pitchSemitones / 12), t);
   }
