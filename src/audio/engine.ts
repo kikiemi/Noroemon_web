@@ -111,10 +111,21 @@ export class AudioEngine {
   }
 
   private async registerWorklet(code: string): Promise<void> {
-    const blob = new Blob([code], { type: 'application/javascript' });
-    const url = URL.createObjectURL(blob);
-    try { await this.ctx.audioWorklet.addModule(url); }
-    finally { URL.revokeObjectURL(url); }
+    // iOS Safari sometimes rejects Blob URLs for AudioWorklet.
+    // Try Blob URL first, fall back to data: URL.
+    if (this.ctx.state === 'suspended') {
+      try { await this.ctx.resume(); } catch { /* ignore */ }
+    }
+    const tryUrl = async (url: string): Promise<boolean> => {
+      try { await this.ctx.audioWorklet.addModule(url); return true; } catch { return false; }
+    };
+    const blobUrl = URL.createObjectURL(new Blob([code], { type: 'application/javascript' }));
+    const ok = await tryUrl(blobUrl);
+    URL.revokeObjectURL(blobUrl);
+    if (!ok) {
+      const b64 = btoa(unescape(encodeURIComponent(code)));
+      await this.ctx.audioWorklet.addModule(`data:application/javascript;base64,${b64}`);
+    }
   }
 
   async loadBuffer(audioBuffer: AudioBuffer): Promise<void> {
