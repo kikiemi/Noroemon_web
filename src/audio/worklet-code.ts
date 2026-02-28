@@ -283,6 +283,8 @@ class PhaseVocoderProcessor extends AudioWorkletProcessor {
 
 registerProcessor('phase-vocoder-processor', PhaseVocoderProcessor);
 `;
+
+
 export const BITCRUSHER_CODE = `
 'use strict';
 class BitCrusherProcessor extends AudioWorkletProcessor {
@@ -329,6 +331,8 @@ class BitCrusherProcessor extends AudioWorkletProcessor {
 }
 registerProcessor('bitcrusher-processor', BitCrusherProcessor);
 `;
+
+
 export const VOCAL_CANCEL_CODE = `
 'use strict';
 class VocalCancelProcessor extends AudioWorkletProcessor {
@@ -360,6 +364,7 @@ class VocalCancelProcessor extends AudioWorkletProcessor {
 }
 registerProcessor('vocal-cancel-processor', VocalCancelProcessor);
 `;
+
 export const FORMANT_CODE = `
 'use strict';
 function fft(re,im,N,inv){let b=Math.log2(N)|0,j=0;for(let i=0;i<N;i++){if(i<j){let t=re[i];re[i]=re[j];re[j]=t;t=im[i];im[i]=im[j];im[j]=t}let m=N>>1;while(m>=1&&j>=m){j-=m;m>>=1}j+=m}for(let s=1;s<=b;s++){let m=1<<s,h=m>>1,wr=1,wi=0,a=Math.PI/h*(inv?1:-1),cs=Math.cos(a),sn=Math.sin(a);for(let j0=0;j0<h;j0++){for(let k=j0;k<N;k+=m){let t=k+h,tr=wr*re[t]-wi*im[t],ti=wr*im[t]+wi*re[t];re[t]=re[k]-tr;im[t]=im[k]-ti;re[k]+=tr;im[k]+=ti}let nw=wr*cs-wi*sn;wi=wr*sn+wi*cs;wr=nw}}if(inv)for(let i=0;i<N;i++){re[i]/=N;im[i]/=N}}
@@ -416,6 +421,7 @@ for(let i=0;i<FS;i++)t.ob[c][(t.ow+i)%OB]+=r2[i]*t.wn[i]*.667}
 t.ow=(t.ow+HP)%OB}}
 registerProcessor('formant-processor',FormantProcessor);
 `;
+
 export const MODULATION_CODE = `
 'use strict';
 const MDL=4096,MMK=MDL-1,APS=6;
@@ -453,6 +459,7 @@ for(let c=nc;c<out.length;c++)out[c][i]=out[0][i];
 t.dp=(t.dp+1)&MMK}return true}}
 registerProcessor('mod-processor',ModProcessor);
 `;
+
 export const COMPRESSOR_CODE = `
 'use strict';
 class CompProcessor extends AudioWorkletProcessor{
@@ -479,4 +486,3 @@ out[c][i]=x*Math.pow(10,(-t.ev[c]+mkup)/20)}
 for(let c=nc;c<out.length;c++)out[c][i]=out[0][i]}return true}}
 registerProcessor('comp-processor',CompProcessor);
 `;
-//# sourceMappingURL=worklet-code.js.map

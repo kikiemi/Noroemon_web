@@ -1,51 +1,53 @@
 export class OPFS {
-    root = null;
-    static DIR = 'tracks';
-    async open() {
+    private root: FileSystemDirectoryHandle | null = null;
+    private static readonly DIR = 'tracks';
+
+    async open(): Promise<void> {
         this.root = await navigator.storage.getDirectory();
     }
-    async dir() {
-        if (!this.root)
-            throw new Error('OPFS not open');
+
+    private async dir(): Promise<FileSystemDirectoryHandle> {
+        if (!this.root) throw new Error('OPFS not open');
         return this.root.getDirectoryHandle(OPFS.DIR, { create: true });
     }
-    async writeFile(id, data) {
+
+    async writeFile(id: string, data: ArrayBuffer): Promise<void> {
         const d = await this.dir();
         const fh = await d.getFileHandle(id + '.bin', { create: true });
-        const writable = await fh.createWritable();
+        const writable = await (fh as FileSystemFileHandle & { createWritable(): Promise<FileSystemWritableFileStream> }).createWritable();
         await writable.write(data);
         await writable.close();
     }
-    async readFile(id) {
+
+    async readFile(id: string): Promise<ArrayBuffer | undefined> {
         try {
             const d = await this.dir();
             const fh = await d.getFileHandle(id + '.bin');
             const file = await fh.getFile();
             return file.arrayBuffer();
-        }
-        catch {
+        } catch {
             return undefined;
         }
     }
-    async deleteFile(id) {
+
+    async deleteFile(id: string): Promise<void> {
         try {
             const d = await this.dir();
             await d.removeEntry(id + '.bin');
-        }
-        catch { }
+        } catch { }
     }
-    async hasFile(id) {
+
+    async hasFile(id: string): Promise<boolean> {
         try {
             const d = await this.dir();
             await d.getFileHandle(id + '.bin');
             return true;
-        }
-        catch {
+        } catch {
             return false;
         }
     }
-    static isSupported() {
+
+    static isSupported(): boolean {
         return typeof navigator !== 'undefined' && 'storage' in navigator && 'getDirectory' in navigator.storage;
     }
 }
-//# sourceMappingURL=opfs.js.map
