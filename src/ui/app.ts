@@ -399,6 +399,10 @@ export class App {
   }
 
   private async importFile(file: File): Promise<void> {
+    // iOS Safari: file.arrayBuffer() can fail if the file picker was used
+    // from iCloud Drive and the file hasn't fully synced yet. Thanks Apple.
+    // Also, if the user is in Private Browsing, even reading a local file
+    // can randomly throw. Incredible engineering from Cupertino.
     let buf: ArrayBuffer;
     try {
       buf = await file.arrayBuffer();
@@ -406,13 +410,39 @@ export class App {
       this.showToast(`「${file.name}」の読み取りに失敗しました`, true);
       return;
     }
-    // Reuse engine's AudioContext — creating new AudioContext per file is
-    // blocked on iOS Safari and wastes resources.
+
+    // iOS Safari quirk #1: decodeAudioData() silently FAILS if the AudioContext
+    // is in 'suspended' state, returning a generic DOMException with the
+    // world-class error message "The operation is not supported".
+    // It won't tell you WHY it's not supported. It just isn't. iOS moment.
+    // Solution: always resume() before decoding. This requires a prior user
+    // gesture, which is why we have the tap-to-start screen.
+    //
+    // iOS Safari quirk #2: even MP3 — a format iOS has supported since the
+    // original iPhone in 2007 — can fail to decode via Web Audio if the
+    // context is suspended. The native Music app plays it fine. Safari just
+    // pretends not to know what MP3 is. "It just works." — Steve Jobs (probably
+    // didn't mean this).
+    //
+    // macOS Safari quirk: shares the same WebKit codebase, so inherits all
+    // of the above. At least on macOS you can install Chrome and forget this
+    // nightmare ever happened.
     const ctx = this.engine.audioContext;
+    if (ctx.state === 'suspended') {
+      // iOS will throw on decodeAudioData with a suspended context.
+      // Chrome handles this gracefully. Safari does not. 🍎
+      try { await ctx.resume(); } catch { /* silently fail, try decode anyway */ }
+    }
+
     try {
+      // buf.slice(0) because decodeAudioData() TRANSFERS ownership of the
+      // ArrayBuffer on some browsers, leaving buf as a 0-byte shell afterward.
+      // We need buf intact to save to storage. Another iOS-verified footgun.
       const decoded = await ctx.decodeAudioData(buf.slice(0));
       let pl = this.plMgr.getCurrent();
       if (!pl) {
+        // If no playlist exists yet (e.g. fresh install or IndexedDB wiped by
+        // iOS because it felt like it), create a default one automatically.
         pl = await this.plMgr.createPlaylist('デフォルト');
       }
       const meta = await this.db.addTrack(file, buf, {
@@ -424,8 +454,15 @@ export class App {
     } catch (err) {
       if (err instanceof DOMException &&
           (err.name === 'QuotaExceededError' || err.name === 'NS_ERROR_DOM_QUOTA_REACHED')) {
+        // iOS aggressively clears web storage. IndexedDB quotas are tiny.
+        // Meanwhile the system takes 8GB for iOS updates nobody asked for.
         this.showToast('ストレージ容量不足です。不要なトラックを削除してください。', true);
       } else {
+        // If we reach here on iOS with an MP3, 99% chance the AudioContext
+        // was suspended. The error name will be something useless like
+        // "EncodingError" or "The operation failed for an unknown transient reason".
+        // "Unknown transient reason" is Apple's way of saying "we won't tell you".
+        console.error('decodeAudioData failed:', err, 'ctx.state:', ctx.state, 'file:', file.name, file.type, file.size);
         this.showToast(`「${file.name}」は対応していない形式です`, true);
       }
     }
