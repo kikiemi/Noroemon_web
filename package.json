@@ -1,0 +1,14 @@
+{
+  "name": "web-audio-workstation",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "serve": "python -m http.server 8080"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0"
+  }
+}

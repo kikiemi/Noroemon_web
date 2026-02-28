@@ -1,0 +1,1267 @@
+﻿<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>黙々ノロえもん</title>
+  <link rel="icon"
+    href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%2300d4ff'/><text y='24' x='5' font-size='20' font-weight='900' fill='%23111'>W</text></svg>">
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#13141a">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="ノロえもん">
+  <link rel="apple-touch-icon"
+    href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'><rect width='512' height='512' rx='80' fill='%2313141a'/><text x='256' y='360' font-size='320' text-anchor='middle' fill='%23f06020' font-family='sans-serif'>ノ</text></svg>">
+  <style>
+    *,
+    *::before,
+    *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0
+    }
+
+    :root {
+      --bg: #13141a;
+      --bg2: #191b22;
+      --surface: #1e2028;
+      --surface-alt: #252830;
+      --surface-hi: #2c2f3a;
+      --border: rgba(255, 255, 255, .06);
+      --border-hi: rgba(255, 255, 255, .12);
+      --text: #dde1eb;
+      --text-sec: #8890a0;
+      --text-dim: #4a5060;
+      --accent: #00d4ff;
+      --accent-h: #33ddff;
+      --accent-dim: rgba(0, 212, 255, .15);
+      --accent-glow: rgba(0, 212, 255, .25);
+      --danger: #ff4d4d;
+      --danger-dim: rgba(255, 77, 77, .15);
+      --green: #00e57a;
+      --radius: 10px;
+      --radius-sm: 6px;
+      --tap: 40px;
+      --panel-border: 1px solid var(--border);
+      --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Hiragino Sans', 'Yu Gothic UI', sans-serif;
+    }
+
+    html,
+    body {
+      height: 100%;
+      overflow: hidden;
+      background: var(--bg)
+    }
+
+    body {
+      font-family: var(--font);
+      color: var(--text);
+      user-select: none;
+      -webkit-user-select: none;
+      -webkit-tap-highlight-color: transparent;
+      touch-action: manipulation;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    ::-webkit-scrollbar {
+      width: 5px;
+      height: 5px
+    }
+
+    ::-webkit-scrollbar-track {
+      background: transparent
+    }
+
+    ::-webkit-scrollbar-thumb {
+      background: rgba(255, 255, 255, .1);
+      border-radius: 3px
+    }
+
+    ::-webkit-scrollbar-thumb:hover {
+      background: rgba(255, 255, 255, .2)
+    }
+
+    #app {
+      display: grid;
+      grid-template-rows: auto 1fr;
+      height: 100vh;
+      height: 100dvh;
+      overflow: hidden
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 16px;
+      height: 48px;
+      background: var(--surface);
+      border-bottom: var(--panel-border);
+      z-index: 20;
+      flex-shrink: 0;
+    }
+
+    header h1 {
+      font-size: .95rem;
+      font-weight: 900;
+      letter-spacing: 2px;
+      color: var(--accent);
+      text-transform: uppercase;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    header h1::before {
+      content: '';
+      display: block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 8px var(--accent-glow);
+      animation: pulse-dot 3s ease-in-out infinite;
+    }
+
+    @keyframes pulse-dot {
+
+      0%,
+      100% {
+        opacity: 1;
+        box-shadow: 0 0 8px var(--accent-glow)
+      }
+
+      50% {
+        opacity: .5;
+        box-shadow: 0 0 16px var(--accent-glow)
+      }
+    }
+
+    .header-right {
+      display: flex;
+      gap: 5px;
+      align-items: center
+    }
+
+    button {
+      background: var(--surface-alt);
+      border: var(--panel-border);
+      color: var(--text);
+      border-radius: var(--radius-sm);
+      padding: 0 12px;
+      font-size: .76rem;
+      cursor: pointer;
+      transition: background .12s, border-color .12s, box-shadow .12s;
+      font-family: var(--font);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      height: var(--tap);
+      line-height: 1;
+      font-weight: 500;
+      white-space: nowrap;
+    }
+
+    button:hover {
+      background: var(--surface-hi);
+      border-color: var(--border-hi);
+    }
+
+    button:active {
+      transform: scale(.97)
+    }
+
+    button.active {
+      background: var(--accent-dim);
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    button.active:hover {
+      background: rgba(0, 212, 255, .22)
+    }
+
+    button.disabled {
+      opacity: .3;
+      pointer-events: none
+    }
+
+    button.primary {
+      background: linear-gradient(135deg, var(--accent), #0099cc);
+      border: none;
+      color: #0a0e14;
+      font-weight: 700;
+      box-shadow: 0 0 16px var(--accent-glow);
+    }
+
+    button.primary:hover {
+      background: linear-gradient(135deg, var(--accent-h), #00b8ee);
+      box-shadow: 0 0 22px var(--accent-glow);
+    }
+
+    button svg {
+      pointer-events: none;
+      flex-shrink: 0
+    }
+
+    main {
+      display: grid;
+      grid-template-columns: 220px 1fr 300px;
+      overflow: hidden;
+      height: 100%;
+    }
+
+    .section-title {
+      font-size: .6rem;
+      text-transform: uppercase;
+      letter-spacing: 2.5px;
+      color: var(--text-dim);
+      margin-bottom: 8px;
+      font-weight: 700;
+    }
+
+    .section {
+      background: var(--surface);
+      border: var(--panel-border);
+      border-radius: var(--radius);
+      padding: 10px 12px;
+    }
+
+    .left-panel {
+      background: var(--bg2);
+      border-right: var(--panel-border);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .pl-mobile-header {
+      display: none;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 14px;
+      border-bottom: var(--panel-border);
+    }
+
+    .pl-mobile-header h2 {
+      flex: 1;
+      font-size: .9rem;
+      font-weight: 700
+    }
+
+    .pl-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 14px;
+      border-bottom: var(--panel-border);
+      flex-shrink: 0;
+    }
+
+    .pl-header .section-title {
+      margin: 0
+    }
+
+    .pl-tabs {
+      display: flex;
+      gap: 3px;
+      flex-wrap: wrap;
+      padding: 8px 10px;
+      border-bottom: var(--panel-border);
+      flex-shrink: 0;
+    }
+
+    .pl-tab {
+      font-size: .68rem;
+      padding: 3px 10px;
+      border-radius: 20px;
+      height: 26px;
+      font-weight: 600;
+      letter-spacing: .3px;
+    }
+
+    .pl-tab.active {
+      background: var(--accent-dim);
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    .track-list {
+      list-style: none;
+      overflow-y: auto;
+      flex: 1;
+      padding: 6px 8px;
+    }
+
+    .track-item {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding: 8px 8px;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: background .1s;
+      position: relative;
+      border: 1px solid transparent;
+      margin-bottom: 2px;
+    }
+
+    .track-item:hover {
+      background: var(--surface-alt)
+    }
+
+    .track-item.playing {
+      background: var(--accent-dim);
+      border-color: rgba(0, 212, 255, .2);
+    }
+
+    .track-item.playing .track-item-name {
+      color: var(--accent);
+      font-weight: 700
+    }
+
+    .track-item-idx {
+      font-size: .65rem;
+      color: var(--text-dim);
+      min-width: 18px;
+      text-align: center;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .track-item.playing .track-item-idx {
+      color: var(--accent)
+    }
+
+    .track-item-name {
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-weight: 500;
+      font-size: .78rem;
+      color: var(--text);
+    }
+
+    .track-item-dur {
+      font-size: .65rem;
+      color: var(--text-dim);
+      font-variant-numeric: tabular-nums;
+      font-weight: 500;
+    }
+
+    .track-item-del {
+      width: 24px;
+      height: 24px;
+      min-height: 24px;
+      padding: 0;
+      font-size: .6rem;
+      border-radius: 50%;
+      opacity: 0;
+      transition: opacity .1s;
+    }
+
+    .track-item:hover .track-item-del {
+      opacity: .45
+    }
+
+    .track-item-del:hover {
+      opacity: 1 !important;
+      color: var(--danger) !important;
+      border-color: var(--danger) !important
+    }
+
+    .track-item-eq {
+      display: flex;
+      align-items: center;
+      gap: 2px;
+      height: 14px;
+      opacity: .5
+    }
+
+    .track-item.playing .track-item-eq {
+      opacity: 1
+    }
+
+    .track-item-eq span {
+      width: 2px;
+      background: var(--accent);
+      border-radius: 1px;
+      animation: eqbar .9s ease-in-out infinite alternate
+    }
+
+    .track-item-eq span:nth-child(1) {
+      height: 6px;
+      animation-delay: 0s
+    }
+
+    .track-item-eq span:nth-child(2) {
+      height: 12px;
+      animation-delay: .15s
+    }
+
+    .track-item-eq span:nth-child(3) {
+      height: 8px;
+      animation-delay: .3s
+    }
+
+    @keyframes eqbar {
+      0% {
+        height: 2px
+      }
+
+      100% {
+        height: 100%
+      }
+    }
+
+    .center-panel {
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      background: var(--bg);
+      border-right: var(--panel-border);
+    }
+
+    #viz-container {
+      height: 120px;
+      flex-shrink: 0;
+      border-bottom: var(--panel-border);
+      background: var(--bg2);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .visualizer-canvas {
+      width: 100%;
+      height: 100%;
+      display: block
+    }
+
+    .waveform-wrapper {
+      padding: 10px 14px;
+      flex-shrink: 0;
+      border-bottom: var(--panel-border);
+      background: var(--bg2);
+    }
+
+    #waveform-area {
+      height: 72px;
+      border-radius: var(--radius-sm);
+      overflow: hidden;
+      border: 1px solid var(--border-hi);
+      cursor: pointer;
+      position: relative;
+      touch-action: none;
+      background: var(--surface);
+    }
+
+    .waveform-canvas {
+      width: 100%;
+      height: 100%;
+      display: block
+    }
+
+    /* Transport */
+    #transport {
+      padding: 10px 14px;
+      flex-shrink: 0;
+      border-bottom: var(--panel-border);
+      background: var(--surface);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    #transport .transport-btns {
+      display: flex;
+      gap: 4px;
+      align-items: center
+    }
+
+    #transport .transport-btns button {
+      width: 36px;
+      height: 36px;
+      border-radius: 50%;
+      padding: 0;
+      background: var(--surface-alt);
+    }
+
+    #transport .transport-btns button:hover {
+      background: var(--surface-hi)
+    }
+
+    #transport .transport-btns button.play-btn {
+      background: linear-gradient(135deg, var(--accent), #0099cc);
+      border: none;
+      color: #0a0e14;
+      width: 44px;
+      height: 44px;
+      box-shadow: 0 0 16px var(--accent-glow);
+    }
+
+    #transport .transport-btns button.play-btn:hover {
+      box-shadow: 0 0 24px var(--accent-glow);
+      background: linear-gradient(135deg, var(--accent-h), #00b8ee);
+    }
+
+    @keyframes pulse {
+
+      0%,
+      100% {
+        box-shadow: 0 0 16px var(--accent-glow)
+      }
+
+      50% {
+        box-shadow: 0 0 28px var(--accent-glow)
+      }
+    }
+
+    button.play-btn.active {
+      animation: pulse 2s infinite
+    }
+
+    .time-display {
+      display: flex;
+      gap: 3px;
+      font-size: .82rem;
+      font-variant-numeric: tabular-nums;
+      min-width: 100px;
+      justify-content: center;
+      color: var(--text-sec);
+      font-weight: 500;
+      font-family: 'SF Mono', 'Consolas', 'Courier New', monospace;
+    }
+
+    .time-display .slash {
+      color: var(--text-dim)
+    }
+
+    .track-info {
+      flex: 1;
+      text-align: center;
+      overflow: hidden;
+      min-width: 0
+    }
+
+    #track-name {
+      font-size: .82rem;
+      font-weight: 700;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 300px;
+      display: inline-block;
+      color: var(--text);
+    }
+
+    #bpm-display {
+      font-size: .72rem;
+      color: var(--accent);
+      font-weight: 700;
+      min-width: 56px;
+      text-align: center;
+      font-family: 'SF Mono', 'Consolas', 'Courier New', monospace;
+      letter-spacing: .5px;
+    }
+
+    #level-meter {
+      display: flex;
+      gap: 2px;
+      align-items: flex-end;
+      height: 24px;
+      min-width: 44px
+    }
+
+    #level-meter .lm-bar {
+      flex: 1;
+      min-width: 3px;
+      max-width: 7px;
+      background: var(--accent);
+      border-radius: 2px;
+      transition: height .05s;
+      height: 2px;
+    }
+
+    #level-meter .lm-bar.clip {
+      background: var(--danger)
+    }
+
+    .center-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 12px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .right-panel {
+      background: var(--bg2);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .right-panel-inner {
+      flex: 1;
+      overflow-y: auto;
+      padding: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    /* Params (knobs) */
+    #param-area {
+      display: flex;
+      gap: 6px;
+      align-items: flex-start;
+      flex-wrap: wrap;
+      padding: 2px 0
+    }
+
+    .knob-container {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 2px
+    }
+
+    .knob-label {
+      font-size: .57rem;
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+      color: var(--text-dim);
+      font-weight: 700
+    }
+
+    .knob-svg {
+      cursor: ns-resize;
+      touch-action: none
+    }
+
+    .knob-value {
+      font-size: .67rem;
+      color: var(--accent);
+      font-weight: 700;
+      font-variant-numeric: tabular-nums
+    }
+
+    .slider-container {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      min-height: 30px
+    }
+
+    .slider-label {
+      font-size: .6rem;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--text-dim);
+      min-width: 64px;
+      font-weight: 700
+    }
+
+    .slider-track-wrap {
+      flex: 1
+    }
+
+    .slider-track {
+      position: relative;
+      height: 4px;
+      background: rgba(255, 255, 255, .07);
+      border-radius: 2px;
+      cursor: pointer;
+      touch-action: none;
+    }
+
+    .slider-fill {
+      position: absolute;
+      top: 0;
+      left: 0;
+      height: 100%;
+      background: linear-gradient(90deg, var(--accent), var(--accent-h));
+      border-radius: 2px;
+      pointer-events: none;
+    }
+
+    .slider-thumb {
+      position: absolute;
+      top: 50%;
+      width: 14px;
+      height: 14px;
+      background: var(--surface-hi);
+      border: 2px solid var(--accent);
+      border-radius: 50%;
+      transform: translate(-50%, -50%);
+      pointer-events: none;
+      box-shadow: 0 0 8px var(--accent-glow);
+    }
+
+    .slider-value {
+      font-size: .67rem;
+      color: var(--accent);
+      font-weight: 700;
+      min-width: 36px;
+      text-align: right;
+      font-variant-numeric: tabular-nums
+    }
+
+    .eq-bank {
+      display: flex;
+      gap: 3px;
+      align-items: flex-end;
+      height: 90px
+    }
+
+    .eq-col {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 3px;
+      height: 100%
+    }
+
+    .eq-bar {
+      flex: 1;
+      width: 100%;
+      min-width: 14px;
+      max-width: 24px;
+      background: rgba(255, 255, 255, .05);
+      border-radius: 3px;
+      position: relative;
+      cursor: ns-resize;
+      overflow: hidden;
+      touch-action: none;
+    }
+
+    .eq-fill {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      width: 100%;
+      background: linear-gradient(to top, var(--accent), var(--accent-h));
+      border-radius: 3px;
+      transition: height .08s;
+    }
+
+    .eq-freq {
+      font-size: .48rem;
+      color: var(--text-dim);
+      font-weight: 700
+    }
+
+    #eq-preset-select {
+      background: var(--surface-alt);
+      border: var(--panel-border);
+      color: var(--text);
+      border-radius: var(--radius-sm);
+      padding: 3px 8px;
+      font-size: .68rem;
+      cursor: pointer;
+      font-family: var(--font);
+      height: 28px;
+      font-weight: 500;
+    }
+
+    #eq-preset-select:hover {
+      border-color: var(--border-hi)
+    }
+
+    #fx-area {
+      display: flex;
+      flex-direction: column;
+      gap: 6px
+    }
+
+    .fx-toggles {
+      display: flex;
+      gap: 4px;
+      flex-wrap: wrap
+    }
+
+    .fx-toggles button {
+      font-size: .68rem;
+      padding: 0 10px;
+      height: 28px
+    }
+
+    #mod-mode-select {
+      background: var(--surface-alt);
+      border: var(--panel-border);
+      color: var(--text);
+      border-radius: var(--radius-sm);
+      padding: 3px 8px;
+      font-size: .68rem;
+      cursor: pointer;
+      height: 28px;
+      font-weight: 500;
+      font-family: var(--font);
+    }
+
+    .drop-active {
+      outline: 2px dashed var(--accent);
+      outline-offset: -4px
+    }
+
+    .now-playing-wave {
+      display: inline-flex;
+      align-items: center;
+      gap: 1px;
+      height: 12px;
+      margin-right: 6px
+    }
+
+    .now-playing-wave span {
+      display: block;
+      width: 2px;
+      background: var(--accent);
+      border-radius: 1px;
+      animation: eqbar .8s ease-in-out infinite alternate
+    }
+
+    .now-playing-wave span:nth-child(1) {
+      animation-delay: 0s
+    }
+
+    .now-playing-wave span:nth-child(2) {
+      animation-delay: .2s
+    }
+
+    .now-playing-wave span:nth-child(3) {
+      animation-delay: .4s
+    }
+
+    .panel-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 6px;
+    }
+
+    .panel-head .section-title {
+      margin: 0
+    }
+
+    .divider {
+      height: 1px;
+      background: var(--border);
+      margin: 2px 0
+    }
+
+    .mobile-nav {
+      display: none;
+      gap: 0;
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      z-index: 60;
+      background: var(--surface);
+      border-top: var(--panel-border);
+      padding: 4px 0 env(safe-area-inset-bottom, 4px);
+    }
+
+    .mobile-nav button {
+      flex: 1;
+      flex-direction: column;
+      gap: 2px;
+      border: none;
+      box-shadow: none;
+      min-height: 50px;
+      border-radius: 0;
+      font-size: .58rem;
+      font-weight: 600;
+      color: var(--text-dim);
+      background: transparent;
+      height: auto;
+    }
+
+    .mobile-nav button.active {
+      color: var(--accent);
+      background: transparent;
+      border: none
+    }
+
+    .mobile-nav button svg {
+      width: 20px;
+      height: 20px
+    }
+
+    @media(max-width:900px) {
+      main {
+        grid-template-columns: 1fr
+      }
+
+      .center-panel {
+        order: 0
+      }
+
+      .left-panel {
+        position: fixed;
+        inset: 0;
+        z-index: 50;
+        transform: translateX(-100%);
+        transition: transform .28s cubic-bezier(.4, 0, .2, 1);
+        border-right: none;
+      }
+
+      .left-panel.mobile-visible {
+        transform: translateX(0)
+      }
+
+      .right-panel {
+        position: fixed;
+        inset: 0;
+        z-index: 50;
+        transform: translateX(100%);
+        transition: transform .28s cubic-bezier(.4, 0, .2, 1);
+        border-left: none;
+      }
+
+      .right-panel.mobile-visible {
+        transform: translateX(0)
+      }
+
+      .mobile-nav {
+        display: flex !important
+      }
+
+      .pl-mobile-header {
+        display: flex !important
+      }
+
+      .pl-header {
+        display: none !important
+      }
+
+      .right-panel-inner {
+        padding-bottom: 60px
+      }
+
+      #viz-container {
+        height: 90px
+      }
+
+      #waveform-area {
+        height: 58px
+      }
+
+      .center-body {
+        padding: 8px 10px
+      }
+    }
+
+    @media(max-width:480px) {
+      #transport {
+        gap: 6px;
+        padding: 8px 10px
+      }
+
+      .time-display {
+        font-size: .75rem;
+        min-width: 88px
+      }
+
+      .knob-svg {
+        width: 60px !important;
+        height: 60px !important
+      }
+    }
+
+    .knob-value {
+      background: transparent;
+      border: none;
+      border-bottom: 1px solid transparent;
+      outline: none;
+      text-align: center;
+      cursor: default;
+      color: inherit;
+      font-size: inherit;
+      font-family: inherit;
+      width: 56px;
+      min-width: 0;
+      max-width: 60px;
+      display: block;
+      padding: 0;
+      -moz-appearance: textfield;
+      appearance: textfield;
+    }
+
+    .slider-value {
+      background: transparent;
+      border: none;
+      border-bottom: 1px solid transparent;
+      outline: none;
+      text-align: right;
+      cursor: default;
+      color: inherit;
+      font-size: inherit;
+      font-family: inherit;
+      width: auto;
+      min-width: 36px;
+      max-width: 72px;
+      padding: 0;
+      -moz-appearance: textfield;
+      appearance: textfield;
+    }
+
+    .knob-value:focus,
+    .slider-value:focus {
+      cursor: text;
+      border-bottom-color: var(--accent);
+      background: rgba(0, 212, 255, 0.05);
+      border-radius: 2px;
+    }
+
+    .knob-value::-webkit-outer-spin-button,
+    .knob-value::-webkit-inner-spin-button,
+    .slider-value::-webkit-outer-spin-button,
+    .slider-value::-webkit-inner-spin-button {
+      -webkit-appearance: none;
+      margin: 0;
+    }
+
+    #mod-area {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: flex-start;
+      padding-top: 4px;
+    }
+
+    #comp-area {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    }
+
+    #fx-area {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    @media (max-width: 480px) {
+      header h1 span {
+        display: none;
+      }
+
+      .header-right .btn-label {
+        display: none;
+      }
+
+      header h1 {
+        font-size: 0.85rem;
+      }
+    }
+  </style>
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('./service-worker.js').catch(() => { });
+      });
+    }
+  </script>
+</head>
+
+<body>
+
+  <div id="app">
+    <header>
+      <h1>黙々ノロえもん <span style="font-size:0.62em;color:var(--text-dim);font-weight:400;margin-left:2px">Noroemon</span>
+      </h1>
+      <div class="header-right">
+        <button id="btn-open" class="primary"><svg viewBox="0 0 24 24" width="15" height="15">
+            <path d="M5 19V5a1 1 0 011-1h4l2 2h7a1 1 0 011 1v12a1 1 0 01-1 1H6a1 1 0 01-1-1z" fill="none"
+              stroke="currentColor" stroke-width="2" stroke-linejoin="round" />
+          </svg> <span class="btn-label">開く</span></button>
+        <button id="btn-export"><svg viewBox="0 0 24 24" width="15" height="15">
+            <path d="M12 3v12m-4-4l4 4 4-4M5 17v2a1 1 0 001 1h12a1 1 0 001-1v-2" fill="none" stroke="currentColor"
+              stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+          </svg> <span class="btn-label">WAV</span></button>
+        <button id="btn-settings" title="設定"><svg viewBox="0 0 24 24" width="15" height="15">
+            <circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="2" />
+            <path d="M12 1v3m0 16v3M4.2 4.2l2.1 2.1m11.4 11.4l2.1 2.1M1 12h3m16 0h3M4.2 19.8l2.1-2.1m11.4-11.4l2.1-2.1"
+              stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+          </svg></button>
+      </div>
+    </header>
+
+    <main>
+
+      <div class="left-panel">
+        <div class="pl-mobile-header">
+          <button id="btn-back-player" style="width:32px;height:32px;padding:0;border-radius:50%"><svg
+              viewBox="0 0 24 24" width="16" height="16">
+              <path d="M15 18l-6-6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                stroke-linejoin="round" />
+            </svg></button>
+          <h2>プレイリスト</h2>
+          <button id="btn-add-playlist" style="font-size:.68rem;padding:0 10px;height:30px"><svg viewBox="0 0 24 24"
+              width="13" height="13">
+              <path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+            </svg> 新規</button>
+        </div>
+        <div class="pl-header">
+          <div class="section-title">プレイリスト</div>
+          <button id="btn-add-playlist-desktop" style="font-size:.68rem;padding:0 10px;height:28px"><svg
+              viewBox="0 0 24 24" width="13" height="13">
+              <path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+            </svg> 新規</button>
+        </div>
+        <div id="playlist-list" style="flex:1;overflow-y:auto;display:flex;flex-direction:column"></div>
+      </div>
+
+      <div class="center-panel">
+        <div id="viz-container"></div>
+
+        <div class="waveform-wrapper">
+          <div id="waveform-area"></div>
+        </div>
+
+        <div id="transport">
+          <div class="transport-btns">
+            <button id="btn-prev" title="前の曲"><svg viewBox="0 0 24 24" width="16" height="16">
+                <polygon points="17,18 9,12 17,6" fill="currentColor" />
+                <rect x="5" y="6" width="2.5" height="12" fill="currentColor" />
+              </svg></button>
+            <button id="btn-stop" title="停止"><svg viewBox="0 0 24 24" width="16" height="16">
+                <rect x="6" y="6" width="12" height="12" rx="1.5" fill="currentColor" />
+              </svg></button>
+            <button id="btn-play" class="play-btn" title="再生/一時停止"><svg viewBox="0 0 24 24" width="17" height="17">
+                <polygon points="8,5 19,12 8,19" fill="currentColor" />
+              </svg></button>
+            <button id="btn-next" title="次の曲"><svg viewBox="0 0 24 24" width="16" height="16">
+                <polygon points="7,6 15,12 7,18" fill="currentColor" />
+                <rect x="16.5" y="6" width="2.5" height="12" fill="currentColor" />
+              </svg></button>
+          </div>
+
+          <div class="time-display">
+            <span id="time-current">0:00.0</span>
+            <span class="slash">/</span>
+            <span id="time-total">0:00.0</span>
+          </div>
+
+          <div class="track-info">
+            <span id="track-name">曲を追加してください</span>
+          </div>
+
+          <span id="bpm-display">-- BPM</span>
+          <span id="pitch-display"
+            style="font-size:.72rem;color:var(--accent);font-weight:700;letter-spacing:.03em;min-width:80px;text-align:center;"></span>
+          <button id="btn-mic" title="マイク入力"
+            style="padding:4px 8px;font-size:.72rem;display:flex;align-items:center;gap:4px;"><svg viewBox="0 0 24 24"
+              width="14" height="14">
+              <path d="M12 2a3 3 0 013 3v7a3 3 0 01-6 0V5a3 3 0 013-3z" fill="currentColor" />
+              <path d="M19 10v2a7 7 0 01-14 0v-2M12 19v3M8 22h8" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" />
+            </svg>MIC</button>
+          <div id="level-meter"></div>
+
+          <div class="transport-btns">
+            <button id="btn-loop-mode" title="ループモード切替"><svg viewBox="0 0 24 24" width="14" height="14">
+                <path d="M17 2l4 4-4 4M3 11V9a4 4 0 014-4h14M7 22l-4-4 4-4M21 13v2a4 4 0 01-4 4H3" fill="none"
+                  stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+              </svg></button>
+            <button id="btn-ab-clear" title="ABループ解除"
+              style="font-size:.65rem;font-weight:800;width:36px;padding:0">xAB</button>
+            <button id="btn-play-mode" title="再生モード切替"><svg viewBox="0 0 24 24" width="14" height="14">
+                <path d="M9 6h11M9 12h11M9 18h11" fill="none" stroke="currentColor" stroke-width="2"
+                  stroke-linecap="round" />
+                <circle cx="4.5" cy="6" r="1.5" fill="currentColor" />
+                <circle cx="4.5" cy="12" r="1.5" fill="currentColor" />
+                <circle cx="4.5" cy="18" r="1.5" fill="currentColor" />
+              </svg></button>
+          </div>
+        </div>
+
+        <div class="center-body">
+        </div>
+      </div>
+
+      <div class="right-panel">
+        <div class="right-panel-inner">
+
+          <div class="section">
+            <div class="section-title">パラメータ</div>
+            <div id="param-area"></div>
+          </div>
+
+          <div class="section">
+            <div class="panel-head">
+              <div class="section-title">イコライザ</div>
+              <select id="eq-preset-select">
+                <option value="">プリセット</option>
+              </select>
+            </div>
+            <div id="eq-area"></div>
+          </div>
+
+          <div class="section">
+            <div class="section-title">エフェクト</div>
+            <div class="fx-toggles" style="margin-bottom:8px">
+              <button id="btn-vocal">ボーカルキャンセル</button>
+              <button id="btn-reverse">逆再生</button>
+              <button id="btn-bc-toggle">ビットクラッシャー</button>
+              <button id="btn-formant">フォルマント</button>
+              <button id="btn-mod-toggle">モジュレーション</button>
+              <button id="btn-comp-toggle">コンプレッサー</button>
+            </div>
+            <div id="fx-area"></div>
+          </div>
+
+          <div class="section">
+            <div class="panel-head">
+              <div class="section-title">モジュレーション</div>
+              <select id="mod-mode-select">
+                <option value="fl">フランジャー</option>
+                <option value="ch">コーラス</option>
+                <option value="ph">フェイザー</option>
+              </select>
+            </div>
+            <div id="mod-area" style="display:flex;gap:10px;flex-wrap:wrap;padding-top:4px"></div>
+          </div>
+
+          <div class="section">
+            <div class="section-title">コンプレッサー</div>
+            <div id="comp-area" style="display:flex;flex-direction:column;gap:5px"></div>
+          </div>
+
+        </div>
+      </div>
+
+    </main>
+  </div>
+
+  <nav class="mobile-nav">
+    <button id="nav-playlist"><svg viewBox="0 0 24 24" width="20" height="20">
+        <path d="M9 6h11M9 12h11M9 18h11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+        <circle cx="4.5" cy="6" r="1.5" fill="currentColor" />
+        <circle cx="4.5" cy="12" r="1.5" fill="currentColor" />
+        <circle cx="4.5" cy="18" r="1.5" fill="currentColor" />
+      </svg>リスト</button>
+    <button id="nav-player"><svg viewBox="0 0 24 24" width="20" height="20">
+        <polygon points="8,5 19,12 8,19" fill="currentColor" />
+      </svg>再生</button>
+    <button id="nav-fx"><svg viewBox="0 0 24 24" width="20" height="20">
+        <circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="2" />
+        <path d="M12 1v3m0 16v3M4.2 4.2l2.1 2.1m11.4 11.4l2.1 2.1M1 12h3m16 0h3M4.2 19.8l2.1-2.1m11.4-11.4l2.1-2.1"
+          stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+      </svg>エフェクト</button>
+  </nav>
+
+  <script type="module" src="dist/main.js"></script>
+</body>
+
+</html>
