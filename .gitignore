@@ -6,3 +6,7 @@ dist/
 
 # ソースマップ
 **/*.js.map
+
+# Apache設定・ユーティリティスクリプト（GitHub Pages不要）
+.htaccess
+scripts/
