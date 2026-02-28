@@ -370,7 +370,13 @@ export class App {
 
   private openFiles(): void {
     const input = document.createElement('input');
-    input.type = 'file'; input.multiple = true; input.accept = 'audio/*';
+    input.type = 'file';
+    input.multiple = true;
+    input.accept = [
+      'audio/mpeg', 'audio/mp4', 'audio/aac', 'audio/ogg', 'audio/flac',
+      'audio/wav', 'audio/x-wav', 'audio/webm', 'audio/x-m4a',
+      '.mp3', '.mp4', '.m4a', '.aac', '.ogg', '.oga', '.flac', '.wav', '.webm', '.opus',
+    ].join(',');
     input.addEventListener('change', async () => {
       const files = input.files;
       if (!files) return;
