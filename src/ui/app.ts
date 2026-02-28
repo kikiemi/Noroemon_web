@@ -88,6 +88,9 @@ export class App {
     }
 
     await Promise.all([this.db.open(), this.engine.init()]);
+    if (this.db.storageMode === 'memory') {
+      this.showToast('⚠️ ストレージ利用不可（プライベートブラウズ？）— セッション中のみ動作', false);
+    }
     this.viz.connect(this.engine.analyser, this.engine.audioContext);
     this.initLevelMeter();
     this.initMobileNav();
