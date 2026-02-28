@@ -87,28 +87,31 @@ export class App {
       this.$[id] = document.getElementById(id) as HTMLElement;
     }
 
-    await this.db.open();
-    await this.plMgr.loadFromDB();
-    await this.engine.init();
+    await Promise.all([this.db.open(), this.engine.init()]);
     this.viz.connect(this.engine.analyser, this.engine.audioContext);
-
     this.initLevelMeter();
     this.initMobileNav();
     this.createControls();
     this.engine.on((ev) => this.onEngineEvent(ev));
 
-    if (await this.db.hasLegacyAudio()) {
-      const banner = document.createElement('div');
-      banner.style.cssText = 'position:fixed;bottom:64px;left:50%;transform:translateX(-50%);background:#f06020;color:#fff;padding:10px 20px;border-radius:8px;font-size:.8rem;z-index:999;max-width:90vw;text-align:center;box-shadow:0 4px 16px rgba(0,0,0,.3)';
-      banner.textContent = '⚠️ 旧形式のトラックが見つかりました。再インポートで新しいOPFSストレージに移行できます。';
-      const closeBtn = document.createElement('button');
-      closeBtn.textContent = '×';
-      closeBtn.style.cssText = 'margin-left:12px;background:transparent;border:none;color:#fff;font-size:1rem;cursor:pointer;';
-      closeBtn.onclick = () => banner.remove();
-      banner.appendChild(closeBtn);
-      document.body.appendChild(banner);
-      setTimeout(() => banner.remove(), 8000);
-    }
+    const [,, trackMetas] = await Promise.all([
+      this.plMgr.loadFromDB(),
+      this.db.hasLegacyAudio().then(has => {
+        if (!has) return;
+        const banner = document.createElement('div');
+        banner.style.cssText = 'position:fixed;bottom:64px;left:50%;transform:translateX(-50%);background:#f06020;color:#fff;padding:10px 20px;border-radius:8px;font-size:.8rem;z-index:999;max-width:90vw;text-align:center;box-shadow:0 4px 16px rgba(0,0,0,.3)';
+        banner.textContent = '⚠️ 旧形式のトラックが見つかりました。再インポートで新しいOPFSストレージに移行できます。';
+        const closeBtn = document.createElement('button');
+        closeBtn.textContent = '×';
+        closeBtn.style.cssText = 'margin-left:12px;background:transparent;border:none;color:#fff;font-size:1rem;cursor:pointer;';
+        closeBtn.onclick = () => banner.remove();
+        banner.appendChild(closeBtn);
+        document.body.appendChild(banner);
+        setTimeout(() => banner.remove(), 8000);
+      }),
+      this.db.getAllTrackMetas(),
+    ]);
+    this.trackMetas = (trackMetas ?? []) as TrackMeta[];
 
     this.engine.audioContext.addEventListener('statechange', () => {
       if (this.engine.audioContext.state === 'suspended' && this.playing) {
@@ -116,7 +119,6 @@ export class App {
         this.updatePlayButton();
       }
     });
-
     document.addEventListener('visibilitychange', () => {
       if (!document.hidden && this.engine.audioContext.state === 'suspended' && this.playing) {
         this.engine.audioContext.resume();
@@ -125,7 +127,6 @@ export class App {
 
     this.wireButtons();
     this.loadState();
-    this.trackMetas = await this.db.getAllTrackMetas();
 
     if (this.state.currentPlaylistId) {
       this.plMgr.setCurrentPlaylist(this.state.currentPlaylistId);
@@ -372,7 +373,6 @@ export class App {
     const input = document.createElement('input');
     input.type = 'file';
     input.multiple = true;
-    input.accept = '.mp3,.m4a,.aac,.flac,.wav,.ogg,.oga,.opus,.webm,.aiff,.aif,.wma';
     input.addEventListener('change', async () => {
       const files = input.files;
       if (!files) return;
