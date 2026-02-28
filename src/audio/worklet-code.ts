@@ -1,4 +1,4 @@
-export const PHASE_VOCODER_CODE = `
+﻿export const PHASE_VOCODER_CODE = `
 'use strict';
 
 const FFT_N  = 2048;
@@ -200,10 +200,6 @@ class PhaseVocoderProcessor extends AudioWorkletProcessor {
     const base  = this._inPos;
     const isIdentity = Math.abs(this._pitch - 1.0) < 0.001 && Math.abs(this._tempo - 1.0) < 0.001;
 
-    // FIX 2: Amplitude correction for hop-size variation
-    // Without this, changing hopS changes OLA overlap and causes volume tremolo
-    const ampScale = (exactHopS / HOP_A) / OLA_NORM;
-
     for (let c = 0; c < nCh; c++) {
       const inp  = this._ch[c];
       const ring = this._ring[c];
@@ -237,19 +233,27 @@ class PhaseVocoderProcessor extends AudioWorkletProcessor {
           phS[k] += exactHopS * (DPHI[k] + dp) / HOP_A;
         }
 
-        // FIX 3: Correct phase locking — preserve analysis phase difference from peak
-        // phS[neighbour] = peakSynthPhase + (neighbourAnalysisPhase - peakAnalysisPhase)
-        for (let k = 2; k < HALF_N - 2; k++) {
-          const m = mag[k];
-          if (m > mag[k - 1] && m > mag[k + 1] && m > 1e-6) {
-            const pp = phS[k];
-            const pa = phA[k];
-            for (let j = k - 2; j <= k + 2; j++) {
-              if (j !== k) phS[j] = pp + (phA[j] - pa);
+        // Phase locking: nearest-peak identity
+        const peakOf = new Int16Array(FFT_N).fill(-1);
+        for (let k = 1; k < HALF_N - 1; k++) {
+          if (mag[k] > mag[k - 1] && mag[k] > mag[k + 1] && mag[k] > 1e-7) {
+            peakOf[k] = k;
+            for (let j = k - 1; j >= 0 && peakOf[j] < 0; j--) {
+              if (mag[j] > mag[k]) break;
+              peakOf[j] = k;
             }
           }
         }
-        for (let k = 1; k < HALF_N; k++) phS[FFT_N - k] = -phS[k];
+        let lastPk = -1;
+        for (let k = HALF_N - 1; k >= 0; k--) {
+          if (peakOf[k] === k) { lastPk = k; }
+          else if (peakOf[k] < 0 && lastPk >= 0) { peakOf[k] = lastPk; }
+        }
+        for (let k = 0; k < HALF_N; k++) {
+          const pk = peakOf[k];
+          if (pk >= 0 && pk !== k) { phS[k] = phS[pk] + (phA[k] - phA[pk]); }
+          phS[FFT_N - k] = -phS[k];
+        }
 
         for (let k = 0; k < FFT_N; k++) {
           let iph = ((phS[k] * (LUT_N / TWO_PI)) | 0) % LUT_N;
@@ -259,9 +263,8 @@ class PhaseVocoderProcessor extends AudioWorkletProcessor {
         }
         ifft(re, im);
 
-        // Write with amplitude-corrected scale (FIX 2 applied here)
         for (let i = 0; i < FFT_N; i++) {
-          ring[(sp + i) & RING_M] += re[i] * HANN[i] * ampScale;
+          ring[(sp + i) & RING_M] += re[i] * HANN[i] / OLA_NORM;
         }
       }
     }
