@@ -102,18 +102,38 @@ export class AudioEngine {
     this.masterGain.connect(this.analyser);
     this.analyser.connect(this.ctx.destination);
 
-    // iOS background audio keepalive:
-    // A looping silent <audio> element forces iOS to maintain the Audio
-    // Session so the AudioContext continues when the screen is locked.
+    // iOS background audio keepalive.
+    //
+    // iOS Safari suspends AudioContext when the app goes to background UNLESS
+    // an <audio> element is actively playing. A data-URI silent WAV is the
+    // most reliable cross-version approach (iOS 14+).
+    //
+    // We also set navigator.audioSession.type = 'playback' (iOS 16.4+) which
+    // explicitly declares this as a media player — same flag Spotify/YouTube
+    // use — so iOS knows not to suspend audio when the screen locks.
+    //
+    // The WAV is generated programmatically to guarantee it's a valid file.
+    // A hard-coded base64 MP3 string risks being rejected by iOS's finicky
+    // decoder. Building WAV from scratch is deterministic. Apple probably
+    // still finds a way to reject it on some iPhone from 2019, but we try.
     const sil = document.createElement('audio');
-    // 1-frame silent MP3 as data URI
-    sil.src = 'data:audio/mp3;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU2LjM2LjEwMAAAAAAAAAAAAAAA//OEAAAAAAAAAAAAAAAAAAAAAAAASW5mbwAAAA8AAAAEAAABIADAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV6urq6urq6urq6urq6urq6urq6urq6urq6v////////////////////////////////8AAAAATGF2YzU2LjQxAAAAAAAAAAAAAAAAJAAAAAAAAAAAASDs90hvAAAAAAAAAAAAAAAAAAAA//MUZAAAAAGkAAAAAAAAA0gAAAAATEFN//MUZAMAAAGkAAAAAAAAA0gAAAAARTMu//MUZAYAAAGkAAAAAAAAA0gAAAAAOTku//MUZAkAAAGkAAAAAAAAA0gAAAAANVVV';
+    sil.src = this._makeSilentWav(2);    // 2-second silent WAV loop
     sil.loop = true;
-    sil.volume = 0.001;
+    sil.volume = 0.001;                  // not 0 — iOS ignores muted audio
     sil.setAttribute('playsinline', '');
     sil.setAttribute('webkit-playsinline', '');
     document.body.appendChild(sil);
     this._silentAudio = sil;
+
+    // iOS 16.4+ audio session type — tell iOS this is a "playback" app
+    // so it doesn't duck/interrupt us during silent periods.
+    // The type is declared in lib.dom.d.ts as of 2024 but may be absent
+    // on older TypeScript targets — hence the (as any) cast. Thanks Apple
+    // for requiring a special flag just to play audio like a normal app.
+    const nav = navigator as unknown as { audioSession?: { type: string } };
+    if (nav.audioSession) {
+      try { nav.audioSession.type = 'playback'; } catch { /* iOS < 16.4 */ }
+    }
 
     this.pvNode.port.onmessage = (e) => {
       const d = e.data;
@@ -165,11 +185,23 @@ export class AudioEngine {
   play(): void {
     if (this.ctx.state === 'suspended') this.ctx.resume();
     this.pvNode.port.postMessage({ type: 'play' });
-    // Start silent audio to keep iOS Audio Session alive in background
-    this._silentAudio?.play().catch(() => {});
+    // Must play the silent audio INSIDE a user gesture call stack — iOS checks this.
+    // The silent WAV loop keeps the Audio Session alive when screen locks.
+    if (this._silentAudio?.paused) {
+      this._silentAudio.play().catch(() => {});
+    }
+    if ('mediaSession' in navigator) {
+      navigator.mediaSession.playbackState = 'playing';
+    }
   }
-  pause(): void { this.pvNode.port.postMessage({ type: 'pause' }); }
-  stop(): void { this.pvNode.port.postMessage({ type: 'stop' }); }
+  pause(): void {
+    this.pvNode.port.postMessage({ type: 'pause' });
+    if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'paused';
+  }
+  stop(): void {
+    this.pvNode.port.postMessage({ type: 'stop' });
+    if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'none';
+  }
   seek(seconds: number): void { this.pvNode.port.postMessage({ type: 'seek', position: seconds * this._sampleRate }); }
   setPitch(semitones: number): void { this.pvNode.port.postMessage({ type: 'setPitch', semitones: clamp(semitones, -24, 24) }); }
   setTempo(factor: number): void { this.pvNode.port.postMessage({ type: 'setTempo', tempo: clamp(factor, 0.25, 4) }); }
@@ -438,6 +470,35 @@ export class AudioEngine {
 
   on(handler: EngineEventHandler): void { this.listeners.push(handler); }
   off(handler: EngineEventHandler): void { this.listeners = this.listeners.filter(h => h !== handler); }
+
+  /** Build a valid PCM WAV data URI containing `durationSec` seconds of silence.
+   *  Using 8000 Hz mono 16-bit to keep the base64 string small (~22KB for 1s).
+   *  The WAV spec is simple enough to construct entirely by hand, so we don't
+   *  need to worry about iOS rejecting a hand-mangled MP3 base64 blob. */
+  private _makeSilentWav(durationSec: number): string {
+    const sr = 8000;
+    const numSamples = sr * durationSec;
+    const dataLen = numSamples * 2;      // 16-bit = 2 bytes/sample
+    const buf = new ArrayBuffer(44 + dataLen);
+    const v = new DataView(buf);
+    const enc = (s: string, off: number) => { for (let i = 0; i < s.length; i++) v.setUint8(off + i, s.charCodeAt(i)); };
+    enc('RIFF', 0);  v.setUint32(4,  36 + dataLen, true);
+    enc('WAVE', 8);  enc('fmt ', 12);
+    v.setUint32(16, 16, true);           // PCM chunk size
+    v.setUint16(20, 1,  true);           // PCM format
+    v.setUint16(22, 1,  true);           // mono
+    v.setUint32(24, sr, true);           // sample rate
+    v.setUint32(28, sr * 2, true);       // byte rate
+    v.setUint16(32, 2,  true);           // block align
+    v.setUint16(34, 16, true);           // bits per sample
+    enc('data', 36); v.setUint32(40, dataLen, true);
+    // samples are already 0 (silence) — no need to fill
+    // Base64-encode the raw buffer (btoa needs a binary string)
+    const bytes = new Uint8Array(buf);
+    let s = '';
+    for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+    return 'data:audio/wav;base64,' + btoa(s);
+  }
   private emit(event: EngineEvent): void { for (const h of this.listeners) h(event); }
 
   async dispose(): Promise<void> {
