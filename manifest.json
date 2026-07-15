@@ -1,0 +1,20 @@
+{
+  "name": "黙々ノロえもん",
+  "short_name": "ノロえもん",
+  "description": "ピッチ・テンポ独立変換つきブラウザ音楽プレイヤー",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#fff4e8",
+  "theme_color": "#fff4e8",
+  "lang": "ja",
+  "icons": [
+    {
+      "src": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' rx='112' fill='%23ff7a1c'/%3E%3Ctext x='256' y='350' font-size='260' text-anchor='middle'%3E%F0%9F%8E%9B%3C/text%3E%3C/svg%3E",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

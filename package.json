@@ -1,0 +1,15 @@
+{
+  "name": "noroemon",
+  "version": "2.0.0",
+  "description": "黙々ノロえもん - ブラウザ完結の音楽プレイヤー",
+  "type": "module",
+  "scripts": {
+    "build": "tsc && prettier --write \"dist/**/*.js\"",
+    "format": "prettier --write \"src/**/*.ts\" \"dist/**/*.js\" service-worker.js"
+  },
+  "license": "CC0-1.0",
+  "devDependencies": {
+    "typescript": "5.7",
+    "prettier": "3.6.2"
+  }
+}

@@ -1,0 +1,17 @@
+AddDefaultCharset UTF-8
+
+<IfModule mod_mime.c>
+  AddType application/javascript .js .mjs
+  AddType application/manifest+json .json
+</IfModule>
+
+<IfModule mod_headers.c>
+  <FilesMatch "\.(html)$|^service-worker\.js$">
+    Header set Cache-Control "no-cache, must-revalidate"
+  </FilesMatch>
+  <FilesMatch "\.(js|json)$">
+    Header set Cache-Control "max-age=300"
+  </FilesMatch>
+</IfModule>
+
+Options -Indexes
