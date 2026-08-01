@@ -149,6 +149,13 @@ export async function db_open() {
   })
   db.idb = opened
   db.mode = opened ? 'idb' : 'memory'
+  if (opened) {
+    opened.onversionchange = () => {
+      opened.close()
+      db.idb = null
+      db.mode = 'memory'
+    }
+  }
   return db
 }
 export async function db_has_legacy_audio(db) {
@@ -165,7 +172,7 @@ export async function db_has_legacy_audio(db) {
 export async function db_add_track(db, file, audio, meta) {
   const tm = {
     id: gen_id(),
-    name: file.name.replace(/\.[^.]+$/, ''),
+    name: file.name.replace(/\.[^.]+$/, '') || file.name,
     duration: meta.duration,
     sampleRate: meta.sampleRate,
     channels: meta.channels,
@@ -220,6 +227,13 @@ export async function db_rename_track(db, id, name) {
   }
   cur.name = name
   return await idb_put(db, ST_TRACKS, cur)
+}
+export async function db_put_track_meta(db, meta) {
+  if (!db.idb) {
+    db.mem_tracks.set(meta.id, meta)
+    return true
+  }
+  return await idb_put(db, ST_TRACKS, meta)
 }
 export async function db_get_audio(db, id) {
   if (!db.idb) {

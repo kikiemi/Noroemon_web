@@ -76,6 +76,7 @@ export type icon_t =
   | 'shuffle'
   | 'x'
   | 'pencil'
+  | 'grip'
 
 const STROKE: Readonly<Record<string, string>> = {
   fill: 'none',
@@ -146,6 +147,14 @@ const ICON_BUILDERS: Readonly<Record<icon_t, () => SVGElement[]>> = {
       'stroke-width': '2',
       'stroke-linejoin': 'round',
     }),
+  ],
+  grip: () => [
+    icon_dot('9', '5'),
+    icon_dot('15', '5'),
+    icon_dot('9', '12'),
+    icon_dot('15', '12'),
+    icon_dot('9', '19'),
+    icon_dot('15', '19'),
   ],
 }
 

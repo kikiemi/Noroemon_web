@@ -28,6 +28,11 @@ export const THEME_LIGHT = 'light'
 export const THEME_DARK = 'dark'
 export type theme_mode_t = typeof THEME_AUTO | typeof THEME_LIGHT | typeof THEME_DARK
 
+export type ab_loop_t = {
+  start: number
+  end: number
+}
+
 export type track_meta_t = {
   id: string
   name: string
@@ -36,6 +41,8 @@ export type track_meta_t = {
   channels: number
   addedAt: number
   size: number
+  abLoop?: ab_loop_t
+  bpm?: number
 }
 
 export type playlist_t = {

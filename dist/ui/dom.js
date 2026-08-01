@@ -112,6 +112,14 @@ const ICON_BUILDERS = {
       'stroke-linejoin': 'round',
     }),
   ],
+  grip: () => [
+    icon_dot('9', '5'),
+    icon_dot('15', '5'),
+    icon_dot('9', '12'),
+    icon_dot('15', '12'),
+    icon_dot('9', '19'),
+    icon_dot('15', '19'),
+  ],
 }
 export function svg_icon(name, size) {
   return svg_el(

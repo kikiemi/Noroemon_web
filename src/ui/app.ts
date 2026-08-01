@@ -36,6 +36,8 @@ import {
   db_get_audio,
   db_all_metas,
   db_delete_track_cascade,
+  db_update_playlist,
+  db_put_track_meta,
   db_has_legacy_audio,
   db_rename_track,
 } from '../store/db.js'
@@ -50,6 +52,9 @@ import {
   pl_current,
   pl_set_current,
   pl_add_track,
+  pl_reorder,
+  pl_forget_track,
+  pl_prune,
   pl_set_current_track,
   pl_next_id,
   pl_prev_id,
@@ -123,6 +128,7 @@ import type {
   player_state_t,
   settings_t,
   track_meta_t,
+  ab_loop_t,
   loop_mode_t,
   play_mode_t,
   mod_mode_t,
@@ -142,6 +148,7 @@ type app_t = {
   cur_audio: ArrayBuffer | null
   metas: Map<string, track_meta_t>
   loading_id: string | null
+  bpm_track_id: string | null
   exporting: boolean
   last_pos: number
   pos_raf: boolean
@@ -293,6 +300,9 @@ function bind_widget_handlers(app: app_t): void {
     eng_set_loop(eng, s, en)
     view_loop_btn(app.refs, app.st.loopMode)
     save_state(app)
+    if (app.cur_meta) {
+      void persist_track_loop(app, app.cur_meta, { start: s, end: en })
+    }
   }
 
   ui.eq.on_change = (i, v) => {
@@ -427,8 +437,12 @@ function playlist_handlers(app: app_t): pl_view_handlers_t {
       if (!p) {
         return
       }
-      const name = view_prompt('プレイリスト名', p.name)
-      if (!name || name === p.name) {
+      const input = view_prompt('プレイリスト名', p.name)
+      if (input === null) {
+        return
+      }
+      const name = input.trim()
+      if (name === '' || name === p.name) {
         return
       }
       void pl_rename(app.pl, id, name).then(() => render_playlist(app))
@@ -465,7 +479,68 @@ function playlist_handlers(app: app_t): pl_view_handlers_t {
         void delete_track(app, tid, meta.name)
       }
     },
+    on_track_reorder: (ids: readonly string[]): void => {
+      const cur = pl_current(app.pl)
+      if (!cur) {
+        return
+      }
+      void pl_reorder(app.pl, cur.id, ids)
+    },
   }
+}
+
+function ab_active_range(meta: track_meta_t, reversed: boolean): ab_loop_t | null {
+  const stored = meta.abLoop
+  if (!stored) {
+    return null
+  }
+  const dur = meta.duration
+  const s = clamp(stored.start, 0, dur)
+  const en = clamp(stored.end, 0, dur)
+  if (en - s < 0.05) {
+    return null
+  }
+  if (!reversed) {
+    return { start: s, end: en }
+  }
+  return { start: dur - en, end: dur - s }
+}
+
+async function persist_track_loop(
+  app: app_t,
+  meta: track_meta_t,
+  active: ab_loop_t | null,
+): Promise<void> {
+  if (active === null) {
+    delete meta.abLoop
+  } else if (app.st.reverse) {
+    meta.abLoop = { start: meta.duration - active.end, end: meta.duration - active.start }
+  } else {
+    meta.abLoop = { start: active.start, end: active.end }
+  }
+  const ok = await db_put_track_meta(app.db, meta)
+  if (!ok) {
+    view_toast('ループ設定を保存できませんでした', true)
+  }
+}
+
+function apply_track_loop(app: app_t, meta: track_meta_t): void {
+  const ab = app.st.loopMode === LOOP_AB ? ab_active_range(meta, app.st.reverse) : null
+  if (ab) {
+    app.st.loopStart = ab.start
+    app.st.loopEnd = ab.end
+    eng_set_loop(app.eng, ab.start, ab.end)
+    wf_set_loop(app.ui.wf, ab.start, ab.end)
+    return
+  }
+  app.st.loopStart = 0
+  app.st.loopEnd = 0
+  if (app.st.loopMode === LOOP_SINGLE) {
+    eng_set_loop(app.eng, 0, meta.duration)
+  } else {
+    eng_clear_loop(app.eng)
+  }
+  wf_clear_loop(app.ui.wf)
 }
 
 async function rename_track(app: app_t, tid: string): Promise<void> {
@@ -507,9 +582,7 @@ async function delete_track(app: app_t, tid: string, name: string): Promise<void
     return
   }
   await db_delete_track_cascade(app.db, tid)
-  for (const l of app.pl.lists.values()) {
-    l.trackIds = l.trackIds.filter((t) => t !== tid)
-  }
+  pl_forget_track(app.pl, tid)
   app.metas.delete(tid)
   if (app.cur_meta && app.cur_meta.id === tid) {
     eng_stop(app.eng)
@@ -587,7 +660,12 @@ async function load_track(app: app_t, id: string, autoplay: boolean): Promise<vo
   try {
     const meta = await db_get_meta(app.db, id)
     const audio = await db_get_audio(app.db, id)
-    if (!meta || !audio || app.loading_id !== id) {
+    if (app.loading_id !== id) {
+      return
+    }
+    if (!meta || !audio) {
+      view_track_name(app.refs, '⚠️ 読み込み失敗', false)
+      view_toast('「' + (meta ? meta.name : '曲') + '」のデータを読み込めませんでした', true)
       return
     }
     app.cur_meta = meta
@@ -607,8 +685,14 @@ async function load_track(app: app_t, id: string, autoplay: boolean): Promise<vo
     apply_state_to_engine(app)
 
     wf_set_buffer(app.ui.wf, decoded)
-    if (app.settings.bpmAuto) {
+    const cached_bpm = meta.bpm ?? 0
+    app.st.bpm = cached_bpm
+    view_bpm(app.refs, cached_bpm)
+    if (app.settings.bpmAuto && cached_bpm <= 0) {
+      app.bpm_track_id = id
       eng_detect_bpm(app.eng, decoded.getChannelData(0).slice(), decoded.sampleRate)
+    } else {
+      app.bpm_track_id = null
     }
 
     wf_set_mirrored(app.ui.wf, app.st.reverse)
@@ -616,12 +700,7 @@ async function load_track(app: app_t, id: string, autoplay: boolean): Promise<vo
       eng_reverse(app.eng)
     }
 
-    if (app.st.loopMode === LOOP_AB && app.st.loopEnd > app.st.loopStart) {
-      eng_set_loop(app.eng, app.st.loopStart, app.st.loopEnd)
-      wf_set_loop(app.ui.wf, app.st.loopStart, app.st.loopEnd)
-    } else if (app.st.loopMode === LOOP_SINGLE) {
-      eng_set_loop(app.eng, 0, meta.duration)
-    }
+    apply_track_loop(app, meta)
 
     view_track_name(app.refs, meta.name, true)
     view_time_total(app.refs, meta.duration)
@@ -723,19 +802,16 @@ function cycle_loop_mode(app: app_t): void {
   const order: loop_mode_t[] = [LOOP_NONE, LOOP_SINGLE, LOOP_AB, LOOP_ALL]
   const i = order.indexOf(app.st.loopMode)
   app.st.loopMode = order[(i + 1) % order.length] ?? LOOP_NONE
-  if (app.st.loopMode === LOOP_SINGLE && app.cur_meta) {
-    eng_set_loop(app.eng, 0, app.cur_meta.duration)
-    wf_clear_loop(app.ui.wf)
-  } else if (app.st.loopMode === LOOP_AB) {
-    if (app.st.loopEnd > app.st.loopStart) {
-      eng_set_loop(app.eng, app.st.loopStart, app.st.loopEnd)
-      wf_set_loop(app.ui.wf, app.st.loopStart, app.st.loopEnd)
-    } else {
-      view_toast('波形をドラッグしてA-B区間を指定してください', false)
-    }
-  } else if (app.st.loopMode === LOOP_NONE || app.st.loopMode === LOOP_ALL) {
+  if (app.cur_meta) {
+    apply_track_loop(app, app.cur_meta)
+  } else {
+    app.st.loopStart = 0
+    app.st.loopEnd = 0
     eng_clear_loop(app.eng)
     wf_clear_loop(app.ui.wf)
+  }
+  if (app.st.loopMode === LOOP_AB && !(app.st.loopEnd > app.st.loopStart)) {
+    view_toast('波形をドラッグしてA-B区間を指定してください', false)
   }
   view_loop_btn(app.refs, app.st.loopMode)
   save_state(app)
@@ -754,15 +830,8 @@ function toggle_reverse(app: app_t): void {
   app.st.reverse = !app.st.reverse
   eng_reverse(app.eng)
   wf_set_mirrored(app.ui.wf, app.st.reverse)
-  if (app.st.loopEnd > app.st.loopStart && app.eng.duration > 0) {
-    const d = app.eng.duration
-    const ns = Math.max(0, d - app.st.loopEnd)
-    const ne = d - app.st.loopStart
-    app.st.loopStart = ns
-    app.st.loopEnd = ne
-    if (app.st.loopMode === LOOP_AB) {
-      wf_set_loop(app.ui.wf, ns, ne)
-    }
+  if (app.cur_meta) {
+    apply_track_loop(app, app.cur_meta)
   }
   view_toggle(app.refs, 'btn_reverse', app.st.reverse)
   save_state(app)
@@ -790,11 +859,25 @@ function on_engine_event(app: app_t, ev: eng_event_t): void {
     case 'loaded':
       view_time_total(app.refs, ev.duration)
       break
-    case 'bpm':
-      app.st.bpm = ev.value
-      view_bpm(app.refs, ev.value)
-      save_state(app)
+    case 'bpm': {
+      const tid = app.bpm_track_id
+      app.bpm_track_id = null
+      if (tid === null) {
+        break
+      }
+      const target = app.metas.get(tid)
+      if (!target) {
+        break
+      }
+      target.bpm = ev.value
+      void db_put_track_meta(app.db, target)
+      if (app.cur_meta && app.cur_meta.id === tid) {
+        app.st.bpm = ev.value
+        view_bpm(app.refs, ev.value)
+        save_state(app)
+      }
       break
+    }
   }
 }
 
@@ -974,6 +1057,9 @@ function make_handlers(app: app_t): wire_handlers_t {
       wf_clear_loop(app.ui.wf)
       view_loop_btn(app.refs, app.st.loopMode)
       save_state(app)
+      if (app.cur_meta) {
+        void persist_track_loop(app, app.cur_meta, null)
+      }
     },
     on_vocal: (): void => {
       app.st.vocalCancel = !app.st.vocalCancel
@@ -1033,6 +1119,7 @@ function make_handlers(app: app_t): wire_handlers_t {
         }
       })()
     },
+    on_add_track: (): void => open_file_picker(app),
     on_add_playlist: (): void => {
       const name = 'プレイリスト ' + String(pl_all(app.pl).length + 1)
       void pl_create(app.pl, name).then(() => render_playlist(app))
@@ -1126,6 +1213,7 @@ export async function app_init(): Promise<void> {
     cur_audio: null,
     metas: new Map(metas.map((m) => [m.id, m])),
     loading_id: null,
+    bpm_track_id: null,
     exporting: false,
     last_pos: 0,
     pos_raf: false,
@@ -1148,10 +1236,6 @@ export async function app_init(): Promise<void> {
   set_view(app, 'player')
   start_pitch_chip(app)
 
-  if (st.bpm > 0) {
-    view_bpm(refs, st.bpm)
-  }
-
   eng.ctx.addEventListener('statechange', () => {
     if (eng.ctx.state === 'suspended' && app.playing) {
       app.playing = false
@@ -1172,6 +1256,10 @@ export async function app_init(): Promise<void> {
     if (first) {
       pl_set_current(pl, first.id)
     }
+  }
+
+  for (const pruned of pl_prune(pl, new Set(app.metas.keys()))) {
+    await db_update_playlist(db, pruned)
   }
   render_playlist(app)
 

@@ -65,6 +65,7 @@ export type refs_t = {
   btn_theme: HTMLElement
   btn_mic: HTMLElement
   btn_add_playlist: HTMLElement
+  btn_add_track: HTMLElement
   nav_player: HTMLElement
   nav_playlist: HTMLElement
   nav_fx: HTMLElement
@@ -106,6 +107,7 @@ const REF_IDS = {
   btn_theme: 'btn-theme',
   btn_mic: 'btn-mic',
   btn_add_playlist: 'btn-add-playlist',
+  btn_add_track: 'btn-add-track',
   nav_player: 'nav-player',
   nav_playlist: 'nav-playlist',
   nav_fx: 'nav-fx',
@@ -211,6 +213,9 @@ export function view_global_errors(): void {
 }
 
 export function view_toast(msg: string, is_err: boolean): void {
+  for (const prev of document.querySelectorAll('.toast')) {
+    prev.remove()
+  }
   const t = h('div', { class: 'toast' + (is_err ? ' err' : ''), text: msg })
   body_append(t)
   requestAnimationFrame(() => t.classList.add('show'))
@@ -440,6 +445,7 @@ export type wire_handlers_t = {
   on_theme: () => void
   on_mic: () => void
   on_add_playlist: () => void
+  on_add_track: () => void
   on_nav: (v: mobile_view_t) => void
   on_eq_preset: (name: string) => void
   on_mod_mode: (value: string) => void
@@ -468,6 +474,7 @@ export function view_wire(refs: refs_t, ui: ui_t, hd: wire_handlers_t): void {
   refs.btn_theme.addEventListener('click', hd.on_theme)
   refs.btn_mic.addEventListener('click', hd.on_mic)
   refs.btn_add_playlist.addEventListener('click', hd.on_add_playlist)
+  refs.btn_add_track.addEventListener('click', hd.on_add_track)
   refs.nav_player.addEventListener('click', () => hd.on_nav('player'))
   refs.nav_playlist.addEventListener('click', () => hd.on_nav('playlist'))
   refs.nav_fx.addEventListener('click', () => hd.on_nav('fx'))
@@ -533,6 +540,7 @@ export type pl_view_handlers_t = {
   on_track_select: (id: string) => void
   on_track_rename: (id: string) => void
   on_track_delete: (id: string) => void
+  on_track_reorder: (ids: readonly string[]) => void
 }
 
 export function view_playlist_render(
@@ -544,6 +552,7 @@ export function view_playlist_render(
 ): void {
   const container = refs.playlist_list
   el_clear(container)
+  container.dataset['playingId'] = playing_id ?? ''
   if (tabs_data.length === 0) {
     return
   }
@@ -582,26 +591,176 @@ export function view_playlist_render(
 
   if (tracks.length === 0) {
     scroll.appendChild(
-      h('div', { class: 'pl-empty', text: '曲がありません。「開く」から追加してください。' }),
+      h('div', {
+        class: 'pl-empty',
+        text: '曲がありません。「＋曲」または「開く」から読み込んでください。',
+      }),
     )
     return
   }
 
-  const rows = new Map<
-    string,
-    {
-      li: HTMLLIElement
-      idx: HTMLElement
-    }
-  >()
-  const BUF = 5
-
-  const make_row = (
-    tr: pl_track_view_t,
-  ): {
+  type row_t = {
     li: HTMLLIElement
     idx: HTMLElement
-  } => {
+  }
+  const rows = new Map<string, row_t>()
+  const order: pl_track_view_t[] = [...tracks]
+  const BUF = 5
+
+  let drag_id: string | null = null
+  let drag_pos = 0
+  let drag_moved = false
+  let ptr_y = 0
+  let ptr_y0 = 0
+  let scroll0 = 0
+  let top0 = 0
+  let auto = 0
+
+  const clampi = (v: number, lo: number, hi: number): number => (v < lo ? lo : v > hi ? hi : v)
+
+  const layout = (): void => {
+    for (let i = 0; i < order.length; i++) {
+      const t = order[i]
+      if (t === undefined) {
+        continue
+      }
+      const row = rows.get(t.id)
+      if (!row) {
+        continue
+      }
+      row.idx.textContent = String(i + 1)
+      if (t.id !== drag_id) {
+        row.li.style.top = String(i * ROW_H) + 'px'
+      }
+    }
+  }
+
+  const render_range = (): void => {
+    const top = scroll.scrollTop
+    const vh = scroll.clientHeight || 400
+    const i0 = Math.max(0, Math.floor(top / ROW_H) - BUF)
+    const i1 = Math.min(order.length, Math.ceil((top + vh) / ROW_H) + BUF)
+    const seen = new Set<string>()
+    if (drag_id !== null) {
+      seen.add(drag_id)
+    }
+    for (let i = i0; i < i1; i++) {
+      const tr = order[i]
+      if (tr === undefined) {
+        continue
+      }
+      seen.add(tr.id)
+      let row = rows.get(tr.id)
+      if (!row) {
+        row = make_row(tr)
+        rows.set(tr.id, row)
+        list.appendChild(row.li)
+      }
+      if (tr.id !== drag_id) {
+        row.li.style.top = String(i * ROW_H) + 'px'
+      }
+      row.idx.textContent = String(i + 1)
+      const pid = container.dataset['playingId'] ?? ''
+      row.li.classList.toggle('playing', pid !== '' && pid === tr.id)
+    }
+    for (const [tid, row] of rows) {
+      if (!seen.has(tid)) {
+        row.li.remove()
+        rows.delete(tid)
+      }
+    }
+  }
+
+  const drag_move = (): void => {
+    if (drag_id === null) {
+      return
+    }
+    const dy = ptr_y - ptr_y0 + (scroll.scrollTop - scroll0)
+    const top = clampi(top0 + dy, 0, (order.length - 1) * ROW_H)
+    const row = rows.get(drag_id)
+    if (row) {
+      row.li.style.top = String(top) + 'px'
+    }
+    const ni = clampi(Math.round(top / ROW_H), 0, order.length - 1)
+    if (ni !== drag_pos) {
+      const moved = order.splice(drag_pos, 1)[0]
+      if (moved !== undefined) {
+        order.splice(ni, 0, moved)
+      }
+      drag_pos = ni
+      drag_moved = true
+      layout()
+    }
+  }
+
+  const auto_step = (): void => {
+    if (drag_id === null) {
+      auto = 0
+      return
+    }
+    const r = scroll.getBoundingClientRect()
+    const d = ptr_y < r.top + 44 ? -12 : ptr_y > r.bottom - 44 ? 12 : 0
+    if (d !== 0) {
+      const before = scroll.scrollTop
+      scroll.scrollTop = before + d
+      if (scroll.scrollTop !== before) {
+        render_range()
+        drag_move()
+      }
+    }
+    auto = requestAnimationFrame(auto_step)
+  }
+
+  const drag_end = (): void => {
+    if (drag_id === null) {
+      return
+    }
+    const row = rows.get(drag_id)
+    if (row) {
+      row.li.classList.remove('dragging')
+    }
+    drag_id = null
+    if (auto !== 0) {
+      cancelAnimationFrame(auto)
+      auto = 0
+    }
+    layout()
+    if (drag_moved) {
+      drag_moved = false
+      hd.on_track_reorder(order.map((t) => t.id))
+    }
+  }
+
+  const drag_start = (ev: PointerEvent, tid: string): void => {
+    if (drag_id !== null || ev.button > 0) {
+      return
+    }
+    const pos = order.findIndex((t) => t.id === tid)
+    const row = rows.get(tid)
+    if (pos < 0 || !row) {
+      return
+    }
+    ev.preventDefault()
+    ev.stopPropagation()
+    drag_id = tid
+    drag_pos = pos
+    drag_moved = false
+    ptr_y = ev.clientY
+    ptr_y0 = ev.clientY
+    scroll0 = scroll.scrollTop
+    top0 = pos * ROW_H
+    row.li.classList.add('dragging')
+    const grip = ev.currentTarget
+    if (grip instanceof HTMLElement) {
+      grip.setPointerCapture(ev.pointerId)
+    }
+    auto = requestAnimationFrame(auto_step)
+  }
+
+  const make_row = (tr: pl_track_view_t): row_t => {
+    const grip = h('span', { class: 'track-item-grip', title: 'ドラッグで並べ替え' }, [
+      svg_icon('grip', 14),
+    ])
     const idx = h('span', { class: 'track-item-idx' })
     const name = h('span', { class: 'track-item-name', text: tr.name, title: tr.name })
     const ren = h('button', { class: 'track-item-rename', title: '名前を変更' }, [
@@ -611,6 +770,7 @@ export function view_playlist_render(
       svg_icon('x', 14),
     ])
     const li = h('li', { class: 'track-item', dataset: { tid: tr.id } }, [
+      grip,
       h('span', { class: 'track-item-eq' }, [h('span'), h('span'), h('span')]),
       idx,
       name,
@@ -619,6 +779,16 @@ export function view_playlist_render(
       del,
     ])
     li.addEventListener('click', () => hd.on_track_select(tr.id))
+    grip.addEventListener('pointerdown', (ev) => drag_start(ev, tr.id))
+    grip.addEventListener('pointermove', (ev) => {
+      if (drag_id !== null) {
+        ptr_y = ev.clientY
+        drag_move()
+      }
+    })
+    grip.addEventListener('pointerup', drag_end)
+    grip.addEventListener('pointercancel', drag_end)
+    grip.addEventListener('click', (ev) => ev.stopPropagation())
     ren.addEventListener('click', (ev) => {
       ev.stopPropagation()
       hd.on_track_rename(tr.id)
@@ -630,41 +800,12 @@ export function view_playlist_render(
     return { li, idx }
   }
 
-  const render_range = (): void => {
-    const top = scroll.scrollTop
-    const vh = scroll.clientHeight || 400
-    const i0 = Math.max(0, Math.floor(top / ROW_H) - BUF)
-    const i1 = Math.min(tracks.length, Math.ceil((top + vh) / ROW_H) + BUF)
-    const seen = new Set<string>()
-    for (let i = i0; i < i1; i++) {
-      const tr = tracks[i]
-      if (tr === undefined) {
-        continue
-      }
-      seen.add(tr.id)
-      let row = rows.get(tr.id)
-      if (!row) {
-        row = make_row(tr)
-        rows.set(tr.id, row)
-        list.appendChild(row.li)
-      }
-      row.li.style.top = String(i * ROW_H) + 'px'
-      row.idx.textContent = String(i + 1)
-      row.li.classList.toggle('playing', playing_id !== null && playing_id === tr.id)
-    }
-    for (const [tid, row] of rows) {
-      if (!seen.has(tid)) {
-        row.li.remove()
-        rows.delete(tid)
-      }
-    }
-  }
-
   render_range()
   scroll.addEventListener('scroll', render_range, { passive: true })
 }
 
 export function view_playlist_highlight(refs: refs_t, playing_id: string | null): void {
+  refs.playlist_list.dataset['playingId'] = playing_id ?? ''
   const items = refs.playlist_list.querySelectorAll<HTMLElement>('.track-item')
   for (const li of items) {
     li.classList.toggle('playing', playing_id !== null && li.dataset['tid'] === playing_id)

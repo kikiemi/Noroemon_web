@@ -470,6 +470,8 @@ function pv_msg(node, st, d) {
       st.n_ch = d.channels.length
       st.len = st.ch[0] ? st.ch[0].length : 0
       st.in_pos = 0
+      st.loop_s = -1
+      st.loop_e = -1
       pv_reset(st)
       node.port.postMessage({ type: 'loaded', duration: st.len / st.sr })
       break
@@ -487,6 +489,9 @@ function pv_msg(node, st, d) {
       break
     case 'seek': {
       var p = Math.floor(d.position)
+      if (!isFinite(p)) {
+        break
+      }
       if (p < 0) {
         p = 0
       }
@@ -522,10 +527,27 @@ function pv_msg(node, st, d) {
       st.tempo = t
       break
     }
-    case 'setLoop':
-      st.loop_s = Math.floor(d.start * st.sr)
-      st.loop_e = Math.floor(d.end * st.sr)
+    case 'setLoop': {
+      var ls = Math.floor(d.start * st.sr)
+      var le = Math.floor(d.end * st.sr)
+      if (!isFinite(ls) || !isFinite(le)) {
+        break
+      }
+      if (ls < 0) {
+        ls = 0
+      }
+      if (le > st.len) {
+        le = st.len
+      }
+      if (le - ls < 128) {
+        st.loop_s = -1
+        st.loop_e = -1
+        break
+      }
+      st.loop_s = ls
+      st.loop_e = le
       break
+    }
     case 'clearLoop':
       st.loop_s = -1
       st.loop_e = -1

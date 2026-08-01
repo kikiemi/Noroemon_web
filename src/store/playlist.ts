@@ -93,21 +93,123 @@ export async function pl_add_track(p: pl_t, playlist_id: string, track_id: strin
   }
 }
 
+export async function pl_reorder(
+  p: pl_t,
+  playlist_id: string,
+  ordered_ids: readonly string[],
+): Promise<void> {
+  const pl = p.lists.get(playlist_id)
+  if (!pl) {
+    return
+  }
+  const have = new Set(pl.trackIds)
+  const used = new Set<string>()
+  const next: string[] = []
+  for (const tid of ordered_ids) {
+    if (have.has(tid) && !used.has(tid)) {
+      next.push(tid)
+      used.add(tid)
+    }
+  }
+
+  for (const tid of pl.trackIds) {
+    if (!used.has(tid)) {
+      next.push(tid)
+    }
+  }
+  if (next.length !== pl.trackIds.length) {
+    return
+  }
+  const is_cur = p.cur_id === playlist_id
+  const cur_tid = is_cur ? pl.trackIds[p.cur_idx] : undefined
+  pl.trackIds = next
+  await db_update_playlist(p.db, pl)
+  if (!is_cur) {
+    return
+  }
+  if (cur_tid !== undefined) {
+    p.cur_idx = Math.max(0, next.indexOf(cur_tid))
+  }
+  pl_reshuffle(p)
+  const si = p.shuffle_order.indexOf(p.cur_idx)
+  if (si >= 0) {
+    p.shuffle_idx = si
+  }
+}
+
+function fix_cur_after_removal(p: pl_t, pl: playlist_t, cur_tid: string | undefined): void {
+  if (cur_tid !== undefined) {
+    const i = pl.trackIds.indexOf(cur_tid)
+    if (i >= 0) {
+      p.cur_idx = i
+    }
+  }
+  if (p.cur_idx >= pl.trackIds.length) {
+    p.cur_idx = pl.trackIds.length > 0 ? pl.trackIds.length - 1 : 0
+  }
+  pl_reshuffle(p)
+  const si = p.shuffle_order.indexOf(p.cur_idx)
+  if (si >= 0) {
+    p.shuffle_idx = si
+  }
+}
+
 export async function pl_remove_track(
   p: pl_t,
   playlist_id: string,
   track_id: string,
 ): Promise<void> {
   const pl = p.lists.get(playlist_id)
-  if (!pl) {
+  if (!pl || !pl.trackIds.includes(track_id)) {
     return
   }
+  const is_cur = p.cur_id === playlist_id
+  const cur_tid = is_cur ? pl.trackIds[p.cur_idx] : undefined
   pl.trackIds = pl.trackIds.filter((t) => t !== track_id)
   await db_update_playlist(p.db, pl)
-  if (p.cur_idx >= pl.trackIds.length) {
-    p.cur_idx = pl.trackIds.length > 0 ? pl.trackIds.length - 1 : 0
+  if (is_cur) {
+    fix_cur_after_removal(p, pl, cur_tid)
   }
-  pl_reshuffle(p)
+}
+
+export function pl_forget_track(p: pl_t, track_id: string): void {
+  const cur = pl_current(p)
+  const cur_tid = cur ? cur.trackIds[p.cur_idx] : undefined
+  let cur_changed = false
+  for (const pl of p.lists.values()) {
+    if (pl.trackIds.includes(track_id)) {
+      pl.trackIds = pl.trackIds.filter((t) => t !== track_id)
+      if (cur && pl.id === cur.id) {
+        cur_changed = true
+      }
+    }
+  }
+  if (cur && cur_changed) {
+    fix_cur_after_removal(p, cur, cur_tid)
+  }
+}
+
+export function pl_prune(p: pl_t, valid: ReadonlySet<string>): playlist_t[] {
+  const changed: playlist_t[] = []
+  let cur_changed = false
+  for (const pl of p.lists.values()) {
+    const next = pl.trackIds.filter((t) => valid.has(t))
+    if (next.length !== pl.trackIds.length) {
+      pl.trackIds = next
+      changed.push(pl)
+      if (pl.id === p.cur_id) {
+        cur_changed = true
+      }
+    }
+  }
+  if (cur_changed) {
+    const cur = pl_current(p)
+    if (cur && p.cur_idx >= cur.trackIds.length) {
+      p.cur_idx = cur.trackIds.length > 0 ? cur.trackIds.length - 1 : 0
+    }
+    pl_reshuffle(p)
+  }
+  return changed
 }
 
 export function pl_set_current_track(p: pl_t, track_id: string): void {

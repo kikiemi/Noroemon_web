@@ -52,6 +52,7 @@ const REF_IDS = {
   btn_theme: 'btn-theme',
   btn_mic: 'btn-mic',
   btn_add_playlist: 'btn-add-playlist',
+  btn_add_track: 'btn-add-track',
   nav_player: 'nav-player',
   nav_playlist: 'nav-playlist',
   nav_fx: 'nav-fx',
@@ -152,6 +153,9 @@ export function view_global_errors() {
   })
 }
 export function view_toast(msg, is_err) {
+  for (const prev of document.querySelectorAll('.toast')) {
+    prev.remove()
+  }
   const t = h('div', { class: 'toast' + (is_err ? ' err' : ''), text: msg })
   body_append(t)
   requestAnimationFrame(() => t.classList.add('show'))
@@ -327,6 +331,7 @@ export function view_wire(refs, ui, hd) {
   refs.btn_theme.addEventListener('click', hd.on_theme)
   refs.btn_mic.addEventListener('click', hd.on_mic)
   refs.btn_add_playlist.addEventListener('click', hd.on_add_playlist)
+  refs.btn_add_track.addEventListener('click', hd.on_add_track)
   refs.nav_player.addEventListener('click', () => hd.on_nav('player'))
   refs.nav_playlist.addEventListener('click', () => hd.on_nav('playlist'))
   refs.nav_fx.addEventListener('click', () => hd.on_nav('fx'))
@@ -372,6 +377,7 @@ const ROW_H = 52
 export function view_playlist_render(refs, tabs_data, tracks, playing_id, hd) {
   const container = refs.playlist_list
   el_clear(container)
+  container.dataset['playingId'] = playing_id ?? ''
   if (tabs_data.length === 0) {
     return
   }
@@ -407,48 +413,52 @@ export function view_playlist_render(refs, tabs_data, tracks, playing_id, hd) {
   container.appendChild(scroll)
   if (tracks.length === 0) {
     scroll.appendChild(
-      h('div', { class: 'pl-empty', text: '曲がありません。「開く」から追加してください。' }),
+      h('div', {
+        class: 'pl-empty',
+        text: '曲がありません。「＋曲」または「開く」から読み込んでください。',
+      }),
     )
     return
   }
   const rows = new Map()
+  const order = [...tracks]
   const BUF = 5
-  const make_row = (tr) => {
-    const idx = h('span', { class: 'track-item-idx' })
-    const name = h('span', { class: 'track-item-name', text: tr.name, title: tr.name })
-    const ren = h('button', { class: 'track-item-rename', title: '名前を変更' }, [
-      svg_icon('pencil', 14),
-    ])
-    const del = h('button', { class: 'track-item-del', title: 'ライブラリから削除' }, [
-      svg_icon('x', 14),
-    ])
-    const li = h('li', { class: 'track-item', dataset: { tid: tr.id } }, [
-      h('span', { class: 'track-item-eq' }, [h('span'), h('span'), h('span')]),
-      idx,
-      name,
-      h('span', { class: 'track-item-dur', text: fmt_time(tr.duration) }),
-      ren,
-      del,
-    ])
-    li.addEventListener('click', () => hd.on_track_select(tr.id))
-    ren.addEventListener('click', (ev) => {
-      ev.stopPropagation()
-      hd.on_track_rename(tr.id)
-    })
-    del.addEventListener('click', (ev) => {
-      ev.stopPropagation()
-      hd.on_track_delete(tr.id)
-    })
-    return { li, idx }
+  let drag_id = null
+  let drag_pos = 0
+  let drag_moved = false
+  let ptr_y = 0
+  let ptr_y0 = 0
+  let scroll0 = 0
+  let top0 = 0
+  let auto = 0
+  const clampi = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v)
+  const layout = () => {
+    for (let i = 0; i < order.length; i++) {
+      const t = order[i]
+      if (t === undefined) {
+        continue
+      }
+      const row = rows.get(t.id)
+      if (!row) {
+        continue
+      }
+      row.idx.textContent = String(i + 1)
+      if (t.id !== drag_id) {
+        row.li.style.top = String(i * ROW_H) + 'px'
+      }
+    }
   }
   const render_range = () => {
     const top = scroll.scrollTop
     const vh = scroll.clientHeight || 400
     const i0 = Math.max(0, Math.floor(top / ROW_H) - BUF)
-    const i1 = Math.min(tracks.length, Math.ceil((top + vh) / ROW_H) + BUF)
+    const i1 = Math.min(order.length, Math.ceil((top + vh) / ROW_H) + BUF)
     const seen = new Set()
+    if (drag_id !== null) {
+      seen.add(drag_id)
+    }
     for (let i = i0; i < i1; i++) {
-      const tr = tracks[i]
+      const tr = order[i]
       if (tr === undefined) {
         continue
       }
@@ -459,9 +469,12 @@ export function view_playlist_render(refs, tabs_data, tracks, playing_id, hd) {
         rows.set(tr.id, row)
         list.appendChild(row.li)
       }
-      row.li.style.top = String(i * ROW_H) + 'px'
+      if (tr.id !== drag_id) {
+        row.li.style.top = String(i * ROW_H) + 'px'
+      }
       row.idx.textContent = String(i + 1)
-      row.li.classList.toggle('playing', playing_id !== null && playing_id === tr.id)
+      const pid = container.dataset['playingId'] ?? ''
+      row.li.classList.toggle('playing', pid !== '' && pid === tr.id)
     }
     for (const [tid, row] of rows) {
       if (!seen.has(tid)) {
@@ -470,10 +483,135 @@ export function view_playlist_render(refs, tabs_data, tracks, playing_id, hd) {
       }
     }
   }
+  const drag_move = () => {
+    if (drag_id === null) {
+      return
+    }
+    const dy = ptr_y - ptr_y0 + (scroll.scrollTop - scroll0)
+    const top = clampi(top0 + dy, 0, (order.length - 1) * ROW_H)
+    const row = rows.get(drag_id)
+    if (row) {
+      row.li.style.top = String(top) + 'px'
+    }
+    const ni = clampi(Math.round(top / ROW_H), 0, order.length - 1)
+    if (ni !== drag_pos) {
+      const moved = order.splice(drag_pos, 1)[0]
+      if (moved !== undefined) {
+        order.splice(ni, 0, moved)
+      }
+      drag_pos = ni
+      drag_moved = true
+      layout()
+    }
+  }
+  const auto_step = () => {
+    if (drag_id === null) {
+      auto = 0
+      return
+    }
+    const r = scroll.getBoundingClientRect()
+    const d = ptr_y < r.top + 44 ? -12 : ptr_y > r.bottom - 44 ? 12 : 0
+    if (d !== 0) {
+      const before = scroll.scrollTop
+      scroll.scrollTop = before + d
+      if (scroll.scrollTop !== before) {
+        render_range()
+        drag_move()
+      }
+    }
+    auto = requestAnimationFrame(auto_step)
+  }
+  const drag_end = () => {
+    if (drag_id === null) {
+      return
+    }
+    const row = rows.get(drag_id)
+    if (row) {
+      row.li.classList.remove('dragging')
+    }
+    drag_id = null
+    if (auto !== 0) {
+      cancelAnimationFrame(auto)
+      auto = 0
+    }
+    layout()
+    if (drag_moved) {
+      drag_moved = false
+      hd.on_track_reorder(order.map((t) => t.id))
+    }
+  }
+  const drag_start = (ev, tid) => {
+    if (drag_id !== null || ev.button > 0) {
+      return
+    }
+    const pos = order.findIndex((t) => t.id === tid)
+    const row = rows.get(tid)
+    if (pos < 0 || !row) {
+      return
+    }
+    ev.preventDefault()
+    ev.stopPropagation()
+    drag_id = tid
+    drag_pos = pos
+    drag_moved = false
+    ptr_y = ev.clientY
+    ptr_y0 = ev.clientY
+    scroll0 = scroll.scrollTop
+    top0 = pos * ROW_H
+    row.li.classList.add('dragging')
+    const grip = ev.currentTarget
+    if (grip instanceof HTMLElement) {
+      grip.setPointerCapture(ev.pointerId)
+    }
+    auto = requestAnimationFrame(auto_step)
+  }
+  const make_row = (tr) => {
+    const grip = h('span', { class: 'track-item-grip', title: 'ドラッグで並べ替え' }, [
+      svg_icon('grip', 14),
+    ])
+    const idx = h('span', { class: 'track-item-idx' })
+    const name = h('span', { class: 'track-item-name', text: tr.name, title: tr.name })
+    const ren = h('button', { class: 'track-item-rename', title: '名前を変更' }, [
+      svg_icon('pencil', 14),
+    ])
+    const del = h('button', { class: 'track-item-del', title: 'ライブラリから削除' }, [
+      svg_icon('x', 14),
+    ])
+    const li = h('li', { class: 'track-item', dataset: { tid: tr.id } }, [
+      grip,
+      h('span', { class: 'track-item-eq' }, [h('span'), h('span'), h('span')]),
+      idx,
+      name,
+      h('span', { class: 'track-item-dur', text: fmt_time(tr.duration) }),
+      ren,
+      del,
+    ])
+    li.addEventListener('click', () => hd.on_track_select(tr.id))
+    grip.addEventListener('pointerdown', (ev) => drag_start(ev, tr.id))
+    grip.addEventListener('pointermove', (ev) => {
+      if (drag_id !== null) {
+        ptr_y = ev.clientY
+        drag_move()
+      }
+    })
+    grip.addEventListener('pointerup', drag_end)
+    grip.addEventListener('pointercancel', drag_end)
+    grip.addEventListener('click', (ev) => ev.stopPropagation())
+    ren.addEventListener('click', (ev) => {
+      ev.stopPropagation()
+      hd.on_track_rename(tr.id)
+    })
+    del.addEventListener('click', (ev) => {
+      ev.stopPropagation()
+      hd.on_track_delete(tr.id)
+    })
+    return { li, idx }
+  }
   render_range()
   scroll.addEventListener('scroll', render_range, { passive: true })
 }
 export function view_playlist_highlight(refs, playing_id) {
+  refs.playlist_list.dataset['playingId'] = playing_id ?? ''
   const items = refs.playlist_list.querySelectorAll('.track-item')
   for (const li of items) {
     li.classList.toggle('playing', playing_id !== null && li.dataset['tid'] === playing_id)

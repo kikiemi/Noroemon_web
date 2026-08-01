@@ -1,6 +1,6 @@
 'use strict'
 
-var CACHE_NAME = 'noroemon-v6'
+var CACHE_NAME = 'noroemon-v7'
 
 var PRECACHE = [
   './',

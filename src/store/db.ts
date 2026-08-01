@@ -177,6 +177,13 @@ export async function db_open(): Promise<db_t> {
 
   db.idb = opened
   db.mode = opened ? 'idb' : 'memory'
+  if (opened) {
+    opened.onversionchange = () => {
+      opened.close()
+      db.idb = null
+      db.mode = 'memory'
+    }
+  }
   return db
 }
 
@@ -204,7 +211,7 @@ export async function db_add_track(
 ): Promise<track_meta_t | null> {
   const tm: track_meta_t = {
     id: gen_id(),
-    name: file.name.replace(/\.[^.]+$/, ''),
+    name: file.name.replace(/\.[^.]+$/, '') || file.name,
     duration: meta.duration,
     sampleRate: meta.sampleRate,
     channels: meta.channels,
@@ -263,6 +270,14 @@ export async function db_rename_track(db: db_t, id: string, name: string): Promi
   }
   cur.name = name
   return await idb_put(db, ST_TRACKS, cur)
+}
+
+export async function db_put_track_meta(db: db_t, meta: track_meta_t): Promise<boolean> {
+  if (!db.idb) {
+    db.mem_tracks.set(meta.id, meta)
+    return true
+  }
+  return await idb_put(db, ST_TRACKS, meta)
 }
 
 export async function db_get_audio(db: db_t, id: string): Promise<ArrayBuffer | null> {
