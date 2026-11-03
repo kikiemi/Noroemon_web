@@ -3,14 +3,22 @@ AddDefaultCharset UTF-8
 <IfModule mod_mime.c>
   AddType application/javascript .js .mjs
   AddType application/manifest+json .json
+  AddType application/wasm .wasm
+  AddType application/octet-stream .000 .001 .002 .003 .004 .005 .006 .007 .008 .009
 </IfModule>
 
 <IfModule mod_headers.c>
+  Header set Cross-Origin-Opener-Policy "same-origin"
+  Header set Cross-Origin-Embedder-Policy "require-corp"
+  Header set Cross-Origin-Resource-Policy "same-origin"
   <FilesMatch "\.(html)$|^service-worker\.js$">
     Header set Cache-Control "no-cache, must-revalidate"
   </FilesMatch>
-  <FilesMatch "\.(js|json)$">
+  <FilesMatch "\.(js|mjs|json)$">
     Header set Cache-Control "max-age=300"
+  </FilesMatch>
+  <FilesMatch "\.(wasm|000|001|002|003|004|005|006|007|008|009)$">
+    Header set Cache-Control "max-age=2592000"
   </FilesMatch>
 </IfModule>
 

@@ -1,11 +1,14 @@
 'use strict'
 
-var CACHE_NAME = 'noroemon-v7'
+var CACHE_NAME = 'noroemon-v10'
 
 var PRECACHE = [
   './',
   './index.html',
   './manifest.json',
+  './icons/icon.svg',
+  './icons/icon-192.png',
+  './icons/apple-touch-icon.png',
   './dist/main.js',
   './dist/types.js',
   './dist/engine.js',
@@ -18,11 +21,23 @@ var PRECACHE = [
   './dist/ui/visualizer.js',
   './dist/store/db.js',
   './dist/store/playlist.js',
-  './dist/dsp/pv_worklet.js',
-  './dist/dsp/fx_worklets.js',
-  './dist/dsp/bpm_worker.js',
   './dist/dsp/wav.js',
+  './dist/worklet/dsp.js',
+  './dist/worker/ana.js',
+  './dist/worker/fft.js',
+  './dist/worker/sep.js',
 ]
+
+function with_isolation(res) {
+  if (!res || res.status === 0 || res.type === 'opaque') {
+    return res
+  }
+  var h = new Headers(res.headers)
+  h.set('Cross-Origin-Opener-Policy', 'same-origin')
+  h.set('Cross-Origin-Embedder-Policy', 'require-corp')
+  h.set('Cross-Origin-Resource-Policy', 'same-origin')
+  return new Response(res.body, { status: res.status, statusText: res.statusText, headers: h })
+}
 
 self.addEventListener('install', function (e) {
   e.waitUntil(
@@ -71,6 +86,14 @@ self.addEventListener('fetch', function (e) {
   if (url.origin !== location.origin) {
     return
   }
+  if (url.pathname.indexOf('/models/') >= 0) {
+    e.respondWith(
+      fetch(req).then(function (res) {
+        return with_isolation(res)
+      }),
+    )
+    return
+  }
 
   e.respondWith(
     fetch(req)
@@ -84,15 +107,17 @@ self.addEventListener('fetch', function (e) {
             })
             .catch(function () {})
         }
-        return res
+        return with_isolation(res)
       })
       .catch(function () {
         return caches.match(req).then(function (hit) {
           if (hit) {
-            return hit
+            return with_isolation(hit)
           }
           if (req.mode === 'navigate') {
-            return caches.match('./index.html')
+            return caches.match('./index.html').then(function (idx) {
+              return with_isolation(idx)
+            })
           }
           return new Response('offline', { status: 503, statusText: 'offline' })
         })

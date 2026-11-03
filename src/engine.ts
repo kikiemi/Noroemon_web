@@ -1,30 +1,82 @@
-import { clamp, semis_to_ratio } from './types.js'
-import type { mod_params_t, comp_params_t, player_state_t } from './types.js'
-import { PV_WORKLET_CODE } from './dsp/pv_worklet.js'
-import {
-  BITCRUSHER_CODE,
-  VOCAL_CANCEL_CODE,
-  FORMANT_CODE,
-  MODULATION_CODE,
-  COMPRESSOR_CODE,
-} from './dsp/fx_worklets.js'
-import { BPM_WORKER_CODE } from './dsp/bpm_worker.js'
-import { EQ_BANDS } from './types.js'
+import { clamp, EQ_BANDS, is_rec, field, num_or } from './types.js'
+
+export type pv_params_t = {
+  pitch: number
+  tempo: number
+  rate: number
+  formant: boolean
+  dir: number
+}
+
+export type fx_params_t = {
+  ch_mode: number
+  vc: boolean
+  pan: number
+  width: number
+  hp: number
+  lp: number
+  md_en: boolean
+  md_mode: number
+  md_rate: number
+  md_depth: number
+  md_fb: number
+  md_mix: number
+  ds_en: boolean
+  ds_drive: number
+  ds_tone: number
+  ds_mix: number
+  bc_en: boolean
+  bc_bits: number
+  bc_red: number
+  dl_en: boolean
+  dl_time: number
+  dl_fb: number
+  dl_mix: number
+  dl_pp: boolean
+  dl_damp: number
+  cp_en: boolean
+  cp_thr: number
+  cp_rat: number
+  cp_atk: number
+  cp_rel: number
+  cp_mk: number
+  nz_en: boolean
+  nz_amt: number
+}
+
+export type mix_params_t = {
+  pv: pv_params_t
+  fx: fx_params_t
+  eq: number[]
+  reverb: number
+  reverb_type: string
+  gain: number
+  limiter: boolean
+  wander: number
+}
+
+export type beats_t = {
+  on: boolean
+  bpm: number
+  ofs: number
+  vol: number
+}
 
 export type eng_event_t =
-  | {
-      type: 'position'
-      current: number
-      total: number
-    }
+  | { type: 'position'; current: number; total: number }
   | { type: 'ended' }
+  | { type: 'loaded'; duration: number }
+  | { type: 'loop' }
+  | { type: 'peaks'; job: number; mx: Float32Array; mn: Float32Array }
   | {
-      type: 'loaded'
-      duration: number
-    }
-  | {
-      type: 'bpm'
-      value: number
+      type: 'info'
+      job: number
+      lufs: number
+      peak: number
+      bpm: number
+      beat: number
+      key: number
+      key_conf: number
     }
 
 export type eng_listener_t = (ev: eng_event_t) => void
@@ -35,63 +87,116 @@ export type pitch_info_t = {
   cents: number
 }
 
-export type eng_t = {
-  ctx: AudioContext
+type chain_t = {
   pv: AudioWorkletNode
-  fm: AudioWorkletNode
-  vc: AudioWorkletNode
-  md: AudioWorkletNode
-  bc: AudioWorkletNode
-  cp: AudioWorkletNode
   fx_in: GainNode
   eqs: BiquadFilterNode[]
+  fx: AudioWorkletNode
   conv: ConvolverNode
   wet: GainNode
   dry: GainNode
-  mix: GainNode
-  master: GainNode
+  out: AudioWorkletNode
+  conv_on: boolean
+  conv_timer: number
+  ir_type: string
+}
+
+export type eng_t = {
+  ctx: AudioContext
+  c: chain_t
   analyser: AnalyserNode
   mic_gain: GainNode
   mic_src: MediaStreamAudioSourceNode | null
   mic_stream: MediaStream | null
   silent_el: HTMLAudioElement | null
-  bpm_worker: Worker | null
-  bpm_job: number
+  pv_playing: boolean
+  ana: Worker | null
+  ana_job: number
   listeners: eng_listener_t[]
   duration: number
   sr: number
-
-  pd_buf: Float32Array
+  last: mix_params_t | null
+  pd_buf: Float32Array<ArrayBuffer>
   pd_acf: Float32Array
 }
 
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
-const ALL_WORKLETS: readonly string[] = [
-  PV_WORKLET_CODE,
-  FORMANT_CODE,
-  BITCRUSHER_CODE,
-  VOCAL_CANCEL_CODE,
-  MODULATION_CODE,
-  COMPRESSOR_CODE,
-]
+const WORKLET_URL = new URL('./worklet/dsp.js', import.meta.url).href
+const ANA_URL = new URL('./worker/ana.js', import.meta.url).href
 
-async function worklet_add(ctx: BaseAudioContext, code: string): Promise<void> {
-  const blob_url = URL.createObjectURL(new Blob([code], { type: 'application/javascript' }))
-  try {
-    await ctx.audioWorklet.addModule(blob_url)
-    return
-  } catch {
-  } finally {
-    URL.revokeObjectURL(blob_url)
+export const MD_MODES: Readonly<Record<string, number>> = { fl: 0, ch: 1, ph: 2, tr: 3 }
+
+export function fx_params_default(): fx_params_t {
+  return {
+    ch_mode: 0,
+    vc: false,
+    pan: 0,
+    width: 1,
+    hp: 0,
+    lp: 0,
+    md_en: false,
+    md_mode: 0,
+    md_rate: 0.5,
+    md_depth: 0.5,
+    md_fb: 0.3,
+    md_mix: 0.5,
+    ds_en: false,
+    ds_drive: 12,
+    ds_tone: 0.6,
+    ds_mix: 1,
+    bc_en: false,
+    bc_bits: 16,
+    bc_red: 1,
+    dl_en: false,
+    dl_time: 350,
+    dl_fb: 0.35,
+    dl_mix: 0.3,
+    dl_pp: false,
+    dl_damp: 0.3,
+    cp_en: false,
+    cp_thr: -10,
+    cp_rat: 4,
+    cp_atk: 10,
+    cp_rel: 100,
+    cp_mk: 0,
+    nz_en: false,
+    nz_amt: 0.5,
   }
-  const b64 = btoa(unescape(encodeURIComponent(code)))
-  await ctx.audioWorklet.addModule('data:application/javascript;base64,' + b64)
 }
 
-function param_set(node: AudioWorkletNode, name: string, v: number, t: number): void {
-  const p = node.parameters.get(name)
-  if (p) {
-    p.setValueAtTime(v, t)
+function fx_same(a: fx_params_t, b: fx_params_t): boolean {
+  for (const k of Object.keys(a)) {
+    if (field(a, k) !== field(b, k)) {
+      return false
+    }
+  }
+  return true
+}
+
+function fx_msg(p: fx_params_t): Record<string, number> {
+  const m: Record<string, number> = {}
+  for (const k of Object.keys(p)) {
+    const v = field(p, k)
+    m[k] = typeof v === 'boolean' ? (v ? 1 : 0) : num_or(v, 0)
+  }
+  return m
+}
+
+async function worklet_add(ctx: BaseAudioContext): Promise<void> {
+  try {
+    await ctx.audioWorklet.addModule(WORKLET_URL)
+    return
+  } catch {}
+  const res = await fetch(WORKLET_URL)
+  if (!res.ok) {
+    throw new Error('音声処理モジュールを読み込めません (' + String(res.status) + ')')
+  }
+  const code = await res.text()
+  const blob_url = URL.createObjectURL(new Blob([code], { type: 'text/javascript' }))
+  try {
+    await ctx.audioWorklet.addModule(blob_url)
+  } finally {
+    URL.revokeObjectURL(blob_url)
   }
 }
 
@@ -107,22 +212,212 @@ function make_eq(ctx: BaseAudioContext, gains: readonly number[] | null): Biquad
       f.Q.value = 1.4
     }
     f.frequency.value = freq
-    f.gain.value = gains ? (gains[i] ?? 0) : 0
+    f.gain.value = gains ? clamp(gains[i] ?? 0, -12, 12) : 0
     return f
   })
 }
 
-function make_reverb_ir(ctx: BaseAudioContext, dur: number, decay: number): AudioBuffer {
-  const rate = ctx.sampleRate
-  const len = (rate * dur) | 0
-  const ir = new AudioBuffer({ numberOfChannels: 2, length: len, sampleRate: rate })
+type ir_spec_t = {
+  t60: number
+  pre: number
+  damp0: number
+  damp1: number
+  er: number
+}
+
+const IR_SPECS: Readonly<Record<string, ir_spec_t>> = {
+  hall: { t60: 2.6, pre: 0.02, damp0: 14000, damp1: 3500, er: 0.4 },
+  room: { t60: 0.7, pre: 0.006, damp0: 12000, damp1: 4000, er: 0.6 },
+  plate: { t60: 1.6, pre: 0.0, damp0: 18000, damp1: 8000, er: 0.0 },
+  church: { t60: 5.0, pre: 0.035, damp0: 9000, damp1: 2200, er: 0.5 },
+  cave: { t60: 3.6, pre: 0.05, damp0: 6000, damp1: 1500, er: 0.9 },
+}
+
+export function ir_duration(type: string): number {
+  const sp = IR_SPECS[type] ?? IR_SPECS['hall']
+  return sp ? sp.t60 + sp.pre + 0.1 : 3
+}
+
+function make_reverb_ir(ctx: BaseAudioContext, type: string): AudioBuffer {
+  const sp = IR_SPECS[type] ?? { t60: 2.6, pre: 0.02, damp0: 14000, damp1: 3500, er: 0.4 }
+  const sr = ctx.sampleRate
+  const len = Math.max(1, Math.floor(sr * (sp.t60 + sp.pre)))
+  const ir = new AudioBuffer({ numberOfChannels: 2, length: len, sampleRate: sr })
+  const pre = Math.floor(sp.pre * sr)
+  const k_decay = Math.log(1000) / (sp.t60 * sr)
   for (let c = 0; c < 2; c++) {
     const d = ir.getChannelData(c)
+    let lp = 0
+    let seed = c === 0 ? 0x1234567 : 0x7654321
+    for (let i = pre; i < len; i++) {
+      seed = (seed * 1664525 + 1013904223) >>> 0
+      const nz = (seed / 4294967296) * 2 - 1
+      const t = (i - pre) / (len - pre)
+      const fc = sp.damp0 * Math.pow(sp.damp1 / sp.damp0, t)
+      const a = 1 - Math.exp((-2 * Math.PI * fc) / sr)
+      lp += a * (nz - lp)
+      d[i] = lp * Math.exp(-k_decay * (i - pre))
+    }
+    if (sp.er > 0) {
+      for (let r = 0; r < 8; r++) {
+        const at = pre + Math.floor(sr * (0.004 + 0.009 * r + (c === 0 ? 0.0013 : 0.0021) * r))
+        if (at < len) {
+          d[at] = (d[at] ?? 0) + sp.er * Math.pow(0.78, r) * (r % 2 === 0 ? 1 : -0.8)
+        }
+      }
+    }
+    let e = 0
     for (let i = 0; i < len; i++) {
-      d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, decay)
+      e += d[i] * d[i]
+    }
+    const g = e > 0 ? 1 / Math.sqrt(e) : 1
+    for (let i = 0; i < len; i++) {
+      d[i] *= g * 0.9
     }
   }
   return ir
+}
+
+function chain_build(ctx: BaseAudioContext): chain_t {
+  const w_src = { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2] }
+  const w_fx = { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2] }
+  const c: chain_t = {
+    pv: new AudioWorkletNode(ctx, 'pv-processor', w_src),
+    fx_in: ctx.createGain(),
+    eqs: make_eq(ctx, null),
+    fx: new AudioWorkletNode(ctx, 'fx-processor', w_fx),
+    conv: ctx.createConvolver(),
+    wet: ctx.createGain(),
+    dry: ctx.createGain(),
+    out: new AudioWorkletNode(ctx, 'out-processor', w_fx),
+    conv_on: false,
+    conv_timer: 0,
+    ir_type: '',
+  }
+  c.wet.gain.value = 0
+  c.dry.gain.value = 1
+  c.pv.connect(c.fx_in)
+  let node: AudioNode = c.fx_in
+  for (const eq of c.eqs) {
+    node.connect(eq)
+    node = eq
+  }
+  node.connect(c.fx)
+  c.fx.connect(c.dry)
+  c.conv.connect(c.wet)
+  c.dry.connect(c.out)
+  c.wet.connect(c.out)
+  return c
+}
+
+function chain_reverb_type(c: chain_t, ctx: BaseAudioContext, type: string): void {
+  if (c.ir_type === type) {
+    return
+  }
+  c.ir_type = type
+  c.conv.buffer = make_reverb_ir(ctx, type)
+}
+
+function chain_reverb(c: chain_t, ctx: BaseAudioContext, w: number, smooth: boolean): void {
+  const ww = clamp(w, 0, 1)
+  const t = ctx.currentTime
+  if (ww > 0 && !c.conv_on) {
+    c.fx.connect(c.conv)
+    c.conv_on = true
+  }
+  if (c.conv_timer !== 0) {
+    clearTimeout(c.conv_timer)
+    c.conv_timer = 0
+  }
+  if (smooth) {
+    c.wet.gain.setTargetAtTime(ww, t, 0.03)
+    c.dry.gain.setTargetAtTime(1 - ww * 0.5, t, 0.03)
+  } else {
+    c.wet.gain.value = ww
+    c.dry.gain.value = 1 - ww * 0.5
+  }
+  if (ww === 0 && c.conv_on && smooth) {
+    const ms = (ir_duration(c.ir_type) + 0.3) * 1000
+    c.conv_timer = window.setTimeout(() => {
+      c.conv_timer = 0
+      if (c.wet.gain.value < 1e-4 && c.conv_on) {
+        c.fx.disconnect(c.conv)
+        c.conv_on = false
+      }
+    }, ms)
+  }
+}
+
+function chain_apply(
+  c: chain_t,
+  ctx: BaseAudioContext,
+  m: mix_params_t,
+  last: mix_params_t | null,
+  smooth: boolean,
+): void {
+  const t = ctx.currentTime
+  if (
+    !last ||
+    last.pv.pitch !== m.pv.pitch ||
+    last.pv.tempo !== m.pv.tempo ||
+    last.pv.rate !== m.pv.rate ||
+    last.pv.formant !== m.pv.formant ||
+    last.pv.dir !== m.pv.dir
+  ) {
+    c.pv.port.postMessage({
+      type: 'params',
+      pitch: m.pv.pitch,
+      tempo: m.pv.tempo,
+      rate: m.pv.rate,
+      formant: m.pv.formant ? 1 : 0,
+      dir: m.pv.dir,
+    })
+  }
+  if (!last || last.wander !== m.wander) {
+    c.pv.port.postMessage({ type: 'wander', kind: m.wander })
+  }
+  if (!last || !fx_same(last.fx, m.fx)) {
+    c.fx.port.postMessage({ type: 'set', ...fx_msg(m.fx) })
+  }
+  for (let i = 0; i < c.eqs.length; i++) {
+    const g = clamp(m.eq[i] ?? 0, -12, 12)
+    if (!last || (last.eq[i] ?? 0) !== g) {
+      const f = c.eqs[i]
+      if (!f) {
+        continue
+      }
+      if (smooth) {
+        f.gain.setTargetAtTime(g, t, 0.02)
+      } else {
+        f.gain.value = g
+      }
+    }
+  }
+  if (!last || last.reverb_type !== m.reverb_type) {
+    chain_reverb_type(c, ctx, m.reverb_type)
+  }
+  if (!last || last.reverb !== m.reverb) {
+    chain_reverb(c, ctx, m.reverb, smooth)
+  }
+  if (!last || last.gain !== m.gain) {
+    c.out.port.postMessage({ type: 'gain', g: m.gain, now: smooth ? 0 : 1 })
+  }
+  if (!last || last.limiter !== m.limiter) {
+    c.out.port.postMessage({ type: 'lim', on: m.limiter ? 1 : 0 })
+  }
+}
+
+function mix_copy(m: mix_params_t): mix_params_t {
+  return {
+    pv: { ...m.pv },
+    fx: { ...m.fx },
+    eq: [...m.eq],
+    reverb: m.reverb,
+    reverb_type: m.reverb_type,
+    gain: m.gain,
+    limiter: m.limiter,
+    wander: m.wander,
+  }
 }
 
 function make_silent_wav_uri(sec: number): string {
@@ -151,7 +446,7 @@ function make_silent_wav_uri(sec: number): string {
   const bytes = new Uint8Array(buf)
   let s = ''
   for (let i = 0; i < bytes.length; i++) {
-    s += String.fromCharCode(bytes[i])
+    s += String.fromCharCode(bytes[i] ?? 0)
   }
   return 'data:audio/wav;base64,' + btoa(s)
 }
@@ -162,89 +457,75 @@ function emit(e: eng_t, ev: eng_event_t): void {
   }
 }
 
-export async function eng_init(): Promise<eng_t> {
-  const ctx = new AudioContext({ sampleRate: 44100 })
-  for (const code of ALL_WORKLETS) {
-    await worklet_add(ctx, code)
+function msg_type(d: unknown): string {
+  if (!is_rec(d)) {
+    return ''
   }
+  const t = field(d, 'type')
+  return typeof t === 'string' ? t : ''
+}
 
-  const w_src = { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2] }
-  const w_fx = { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2] }
+function on_pv_msg(e: eng_t, d: unknown): void {
+  if (!is_rec(d)) {
+    return
+  }
+  switch (msg_type(d)) {
+    case 'pos':
+      emit(e, {
+        type: 'position',
+        current: num_or(field(d, 't'), 0),
+        total: num_or(field(d, 'dur'), 0),
+      })
+      break
+    case 'ended':
+      emit(e, { type: 'ended' })
+      break
+    case 'loop':
+      emit(e, { type: 'loop' })
+      break
+    case 'loaded':
+      e.duration = num_or(field(d, 'dur'), 0)
+      emit(e, { type: 'loaded', duration: e.duration })
+      break
+  }
+}
 
+function new_audio_context(): AudioContext {
+  try {
+    return new AudioContext({ sampleRate: 44100, latencyHint: 'playback' })
+  } catch {
+    return new AudioContext({ latencyHint: 'playback' })
+  }
+}
+
+export async function eng_init(): Promise<eng_t> {
+  const ctx = new_audio_context()
+  await worklet_add(ctx)
+  const c = chain_build(ctx)
   const e: eng_t = {
     ctx,
-    pv: new AudioWorkletNode(ctx, 'pv-processor', w_src),
-    fm: new AudioWorkletNode(ctx, 'fm-processor', w_fx),
-    vc: new AudioWorkletNode(ctx, 'vc-processor', w_fx),
-    md: new AudioWorkletNode(ctx, 'md-processor', w_fx),
-    bc: new AudioWorkletNode(ctx, 'bc-processor', w_fx),
-    cp: new AudioWorkletNode(ctx, 'cp-processor', w_fx),
-    fx_in: ctx.createGain(),
-    eqs: make_eq(ctx, null),
-    conv: ctx.createConvolver(),
-    wet: ctx.createGain(),
-    dry: ctx.createGain(),
-    mix: ctx.createGain(),
-    master: ctx.createGain(),
+    c,
     analyser: ctx.createAnalyser(),
     mic_gain: ctx.createGain(),
     mic_src: null,
     mic_stream: null,
     silent_el: null,
-    bpm_worker: null,
-    bpm_job: 0,
+    pv_playing: false,
+    ana: null,
+    ana_job: 0,
     listeners: [],
     duration: 0,
-    sr: 44100,
-    pd_buf: new Float32Array(2048),
+    sr: ctx.sampleRate,
+    last: null,
+    pd_buf: new Float32Array(new ArrayBuffer(2048 * 4)),
     pd_acf: new Float32Array(1024),
   }
-
-  e.conv.buffer = make_reverb_ir(ctx, 2.5, 3)
-  e.wet.gain.value = 0
-  e.dry.gain.value = 1
-  e.master.gain.value = 0.8
   e.analyser.fftSize = 2048
   e.analyser.smoothingTimeConstant = 0.8
-
-  e.pv.connect(e.fm)
-  e.fm.connect(e.fx_in)
-  e.mic_gain.connect(e.fx_in)
-  let node: AudioNode = e.fx_in
-  node.connect(e.vc)
-  node = e.vc
-  for (const eq of e.eqs) {
-    node.connect(eq)
-    node = eq
-  }
-  node.connect(e.md)
-  e.md.connect(e.bc)
-  e.bc.connect(e.cp)
-  e.cp.connect(e.dry)
-  e.cp.connect(e.conv)
-  e.conv.connect(e.wet)
-  e.dry.connect(e.mix)
-  e.wet.connect(e.mix)
-  e.mix.connect(e.master)
-  e.master.connect(e.analyser)
+  e.mic_gain.connect(c.fx_in)
+  c.out.connect(e.analyser)
   e.analyser.connect(ctx.destination)
-
-  e.pv.port.onmessage = (ev: MessageEvent) => {
-    const d = ev.data as {
-      type: string
-      position?: number
-      total?: number
-      duration?: number
-    }
-    if (d.type === 'position') {
-      emit(e, { type: 'position', current: d.position ?? 0, total: d.total ?? 0 })
-    } else if (d.type === 'ended') {
-      emit(e, { type: 'ended' })
-    } else if (d.type === 'loaded') {
-      e.duration = d.duration ?? 0
-      emit(e, { type: 'loaded', duration: e.duration })
-    }
-  }
+  c.pv.port.onmessage = (ev: MessageEvent<unknown>): void => on_pv_msg(e, ev.data)
 
   const sil = document.createElement('audio')
   sil.src = make_silent_wav_uri(2)
@@ -254,48 +535,190 @@ export async function eng_init(): Promise<eng_t> {
   sil.setAttribute('webkit-playsinline', '')
   document.body.appendChild(sil)
   e.silent_el = sil
+  eng_unlock_wire(e)
 
-  const nav = navigator as Navigator & { audioSession?: { type: string } }
+  const nav: Navigator & { audioSession?: { type: string } } = navigator
   if (nav.audioSession) {
     try {
       nav.audioSession.type = 'playback'
     } catch {}
   }
-
   return e
 }
 
-export async function eng_decode(e: eng_t, buf: ArrayBuffer): Promise<AudioBuffer> {
-  if (e.ctx.state === 'suspended') {
-    try {
-      await e.ctx.resume()
-    } catch {}
+export function eng_resume(e: eng_t): void {
+  if (e.ctx.state !== 'running' && e.ctx.state !== 'closed') {
+    e.ctx.resume().catch(() => {})
   }
+}
+
+function eng_unlock_wire(e: eng_t): void {
+  let el_ok = false
+  const on = (): void => {
+    eng_resume(e)
+    const sil = e.silent_el
+    if (!el_ok && sil) {
+      el_ok = true
+      sil
+        .play()
+        .then(() => {
+          if (e.pv_playing === false) {
+            sil.pause()
+          }
+        })
+        .catch(() => {
+          el_ok = false
+        })
+    }
+  }
+  for (const t of ['pointerdown', 'touchend', 'keydown']) {
+    window.addEventListener(t, on, { capture: true, passive: true })
+  }
+}
+
+export async function eng_decode(e: eng_t, buf: ArrayBuffer): Promise<AudioBuffer> {
   return e.ctx.decodeAudioData(buf)
 }
 
-export async function eng_load_buffer(e: eng_t, ab: AudioBuffer): Promise<void> {
-  if (e.ctx.state === 'suspended') {
-    await e.ctx.resume()
+export async function eng_decode_at(buf: ArrayBuffer, sr: number): Promise<AudioBuffer> {
+  const off = new OfflineAudioContext(2, 1, sr)
+  return off.decodeAudioData(buf)
+}
+
+function shared_ok(): boolean {
+  return typeof SharedArrayBuffer !== 'undefined' && window.crossOriginIsolated === true
+}
+
+function chan_alloc(len: number, shared: boolean): Float32Array {
+  if (shared) {
+    return new Float32Array(new SharedArrayBuffer(len * 4))
   }
-  e.sr = ab.sampleRate
+  return new Float32Array(len)
+}
+
+export function eng_load(e: eng_t, ab: AudioBuffer, dir: number, analyze: 'all' | 'peaks'): number {
+  const n_ch = ab.numberOfChannels > 1 ? 2 : 1
+  const len = ab.length
+  const shared = shared_ok()
+  const chs: Float32Array[] = []
+  for (let c = 0; c < n_ch; c++) {
+    const a = chan_alloc(len, shared)
+    a.set(ab.getChannelData(c))
+    chs.push(a)
+  }
   e.duration = ab.duration
-  const channels: Float32Array[] = []
-  for (let c = 0; c < ab.numberOfChannels; c++) {
-    channels.push(ab.getChannelData(c).slice())
+  e.sr = ab.sampleRate
+  const ana_chs: Float32Array[] = shared ? chs : chs.map((x) => x.slice())
+  const tr: ArrayBuffer[] = []
+  if (!shared) {
+    for (const x of chs) {
+      if (x.buffer instanceof ArrayBuffer) {
+        tr.push(x.buffer)
+      }
+    }
   }
-  e.pv.port.postMessage(
-    { type: 'loadBuffer', channels, sampleRate: ab.sampleRate },
-    channels.map((c) => c.buffer),
-  )
+  e.c.pv.port.postMessage({ type: 'load', ch: chs, dir }, tr)
+  return eng_analyze(e, ana_chs, ab.sampleRate, analyze, shared)
+}
+
+function eng_analyze(
+  e: eng_t,
+  chs: Float32Array[],
+  sr: number,
+  want: 'all' | 'peaks',
+  shared: boolean,
+): number {
+  const job = ++e.ana_job
+  if (e.ana) {
+    e.ana.terminate()
+    e.ana = null
+  }
+  let w: Worker
+  try {
+    w = new Worker(ANA_URL, { type: 'module' })
+  } catch {
+    return job
+  }
+  e.ana = w
+  w.onmessage = (ev: MessageEvent<unknown>): void => {
+    const d = ev.data
+    if (!is_rec(d) || num_or(field(d, 'job'), -1) !== e.ana_job) {
+      return
+    }
+    const t = msg_type(d)
+    if (t === 'peaks') {
+      const mx = field(d, 'mx')
+      const mn = field(d, 'mn')
+      if (mx instanceof Float32Array && mn instanceof Float32Array) {
+        emit(e, { type: 'peaks', job, mx, mn })
+      }
+      if (want === 'peaks') {
+        w.terminate()
+        if (e.ana === w) {
+          e.ana = null
+        }
+      }
+    } else if (t === 'info') {
+      emit(e, {
+        type: 'info',
+        job,
+        lufs: num_or(field(d, 'lufs'), -70),
+        peak: num_or(field(d, 'peak'), 1),
+        bpm: num_or(field(d, 'bpm'), 0),
+        beat: num_or(field(d, 'beat'), 0),
+        key: num_or(field(d, 'key'), -1),
+        key_conf: num_or(field(d, 'key_conf'), 0),
+      })
+      w.terminate()
+      if (e.ana === w) {
+        e.ana = null
+      }
+    }
+  }
+  w.onerror = (): void => {
+    w.terminate()
+    if (e.ana === w) {
+      e.ana = null
+    }
+  }
+  const tr: ArrayBuffer[] = []
+  if (!shared) {
+    for (const x of chs) {
+      if (x.buffer instanceof ArrayBuffer) {
+        tr.push(x.buffer)
+      }
+    }
+  }
+  w.postMessage({ ch: chs, sr, job, want }, tr)
+  return job
+}
+
+export function eng_release(e: eng_t): void {
+  e.c.pv.port.postMessage({ type: 'release' })
+}
+
+export function eng_stems(
+  e: eng_t,
+  n: number,
+  data: Int16Array[],
+  scale: Float32Array[],
+  tr: ArrayBuffer[],
+): void {
+  e.c.pv.port.postMessage({ type: 'stems', n, data, scale }, tr)
+}
+
+export function eng_stems_clear(e: eng_t): void {
+  e.c.pv.port.postMessage({ type: 'stems', n: 0, data: [], scale: [] })
+}
+
+export function eng_stem_gains(e: eng_t, g: Float32Array): void {
+  e.c.pv.port.postMessage({ type: 'gains', g })
 }
 
 export function eng_play(e: eng_t): void {
-  if (e.ctx.state === 'suspended') {
-    void e.ctx.resume()
-  }
-  e.pv.port.postMessage({ type: 'play' })
-
+  eng_resume(e)
+  e.pv_playing = true
+  e.c.pv.port.postMessage({ type: 'play' })
   if (e.silent_el && e.silent_el.paused) {
     e.silent_el.play().catch(() => {})
   }
@@ -305,101 +728,67 @@ export function eng_play(e: eng_t): void {
 }
 
 export function eng_pause(e: eng_t): void {
-  e.pv.port.postMessage({ type: 'pause' })
+  e.pv_playing = false
+  e.c.pv.port.postMessage({ type: 'pause' })
   if ('mediaSession' in navigator) {
     navigator.mediaSession.playbackState = 'paused'
   }
 }
 
 export function eng_stop(e: eng_t): void {
-  e.pv.port.postMessage({ type: 'stop' })
+  e.pv_playing = false
+  e.c.pv.port.postMessage({ type: 'stop' })
   if ('mediaSession' in navigator) {
     navigator.mediaSession.playbackState = 'none'
   }
 }
 
 export function eng_seek(e: eng_t, sec: number): void {
-  e.pv.port.postMessage({ type: 'seek', position: sec * e.sr })
-}
-
-export function eng_set_pitch(e: eng_t, semis: number): void {
-  e.pv.port.postMessage({ type: 'setPitch', semitones: clamp(semis, -24, 24) })
-}
-
-export function eng_set_tempo(e: eng_t, f: number): void {
-  e.pv.port.postMessage({ type: 'setTempo', tempo: clamp(f, 0.25, 4) })
-}
-
-export function eng_set_volume(e: eng_t, v: number): void {
-  e.master.gain.setTargetAtTime(clamp(v, 0, 1), e.ctx.currentTime, 0.02)
-}
-
-export function eng_set_loop(e: eng_t, s: number, en: number): void {
-  e.pv.port.postMessage({ type: 'setLoop', start: s, end: en })
-}
-
-export function eng_clear_loop(e: eng_t): void {
-  e.pv.port.postMessage({ type: 'clearLoop' })
-}
-
-export function eng_reverse(e: eng_t): void {
-  e.pv.port.postMessage({ type: 'reverse' })
-}
-
-export function eng_set_eq_band(e: eng_t, i: number, db: number): void {
-  const f = e.eqs[i]
-  if (f) {
-    f.gain.setTargetAtTime(clamp(db, -12, 12), e.ctx.currentTime, 0.02)
+  if (Number.isFinite(sec)) {
+    e.c.pv.port.postMessage({ type: 'seek', sec: Math.max(0, sec) })
   }
 }
 
-export function eng_set_eq_all(e: eng_t, gains: readonly number[]): void {
-  gains.forEach((g, i) => eng_set_eq_band(e, i, g))
+export function eng_set_loop(e: eng_t, s: number, en: number): void {
+  e.c.pv.port.postMessage({ type: 'loop', s, e: en })
 }
 
-export function eng_set_reverb(e: eng_t, w: number): void {
-  const t = e.ctx.currentTime
-  const ww = clamp(w, 0, 1)
-  e.wet.gain.setTargetAtTime(ww, t, 0.03)
-  e.dry.gain.setTargetAtTime(1 - ww * 0.5, t, 0.03)
+export function eng_clear_loop(e: eng_t): void {
+  e.c.pv.port.postMessage({ type: 'noloop' })
 }
 
-export function eng_set_bitcrusher(e: eng_t, bits: number, red: number, en: boolean): void {
-  const t = e.ctx.currentTime
-  param_set(e.bc, 'bits', clamp(bits, 1, 16), t)
-  param_set(e.bc, 'reduction', clamp(red, 1, 64), t)
-  param_set(e.bc, 'enabled', en ? 1 : 0, t)
+export function eng_beats(e: eng_t, b: beats_t): void {
+  e.c.pv.port.postMessage({ type: 'beats', on: b.on ? 1 : 0, bpm: b.bpm, ofs: b.ofs, vol: b.vol })
 }
 
-export function eng_set_vocal_cancel(e: eng_t, en: boolean): void {
-  param_set(e.vc, 'enabled', en ? 1 : 0, e.ctx.currentTime)
+export function eng_apply(e: eng_t, m: mix_params_t): void {
+  chain_apply(e.c, e.ctx, m, e.last, true)
+  e.last = mix_copy(m)
 }
 
-export function eng_set_formant(e: eng_t, en: boolean, pitch_semis: number): void {
-  const t = e.ctx.currentTime
-  param_set(e.fm, 'enabled', en ? 1 : 0, t)
-  param_set(e.fm, 'pitchRatio', semis_to_ratio(pitch_semis), t)
-}
-
-export function eng_set_modulation(e: eng_t, s: mod_params_t): void {
-  const t = e.ctx.currentTime
-  const modes: Record<string, number> = { fl: 0, ch: 1, ph: 2 }
-  param_set(e.md, 'mode', modes[s.mode] ?? 0, t)
-  param_set(e.md, 'rate', s.rate, t)
-  param_set(e.md, 'depth', s.depth, t)
-  param_set(e.md, 'feedback', s.fb, t)
-  param_set(e.md, 'mix', s.mix, t)
-  param_set(e.md, 'enabled', s.en ? 1 : 0, t)
-}
-
-export function eng_set_compressor(e: eng_t, s: comp_params_t): void {
-  const t = e.ctx.currentTime
-  param_set(e.cp, 'threshold', s.thr, t)
-  param_set(e.cp, 'ratio', s.rat, t)
-  param_set(e.cp, 'attack', s.atk, t)
-  param_set(e.cp, 'release', s.rel, t)
-  param_set(e.cp, 'makeup', s.mkup, t)
-  param_set(e.cp, 'enabled', s.en ? 1 : 0, t)
+export function eng_fade(e: eng_t, to: number, sec: number): Promise<void> {
+  return new Promise((resolve) => {
+    const id = Math.floor(Math.random() * 1e9)
+    const port = e.c.out.port
+    let done = false
+    const fin = (): void => {
+      if (!done) {
+        done = true
+        port.removeEventListener('message', on)
+        resolve()
+      }
+    }
+    const on = (ev: MessageEvent<unknown>): void => {
+      const d = ev.data
+      if (msg_type(d) === 'faded' && is_rec(d) && num_or(field(d, 'id'), -1) === id) {
+        fin()
+      }
+    }
+    port.addEventListener('message', on)
+    port.start()
+    port.postMessage({ type: 'fade', to, sec, id })
+    window.setTimeout(fin, sec * 1000 + 400)
+  })
 }
 
 export function eng_detect_pitch(e: eng_t): pitch_info_t | null {
@@ -415,12 +804,10 @@ export function eng_detect_pitch(e: eng_t): pitch_info_t | null {
   if (rms < 0.01) {
     return null
   }
-
   const sr = e.ctx.sampleRate
   const min_lag = Math.max(2, (sr / 1000) | 0)
   const max_lag = Math.min(1023, (sr / 70) | 0)
   const acf = e.pd_acf
-
   let g_max = 0
   for (let lag = min_lag; lag <= max_lag; lag++) {
     let sum = 0
@@ -437,7 +824,6 @@ export function eng_detect_pitch(e: eng_t): pitch_info_t | null {
   if (g_max < rms * rms * 0.3) {
     return null
   }
-
   let pos = -1
   const th = g_max * 0.85
   for (let lag = min_lag + 1; lag < max_lag; lag++) {
@@ -449,13 +835,11 @@ export function eng_detect_pitch(e: eng_t): pitch_info_t | null {
   if (pos < 0) {
     return null
   }
-
-  const y0 = acf[pos - 1],
-    y1 = acf[pos],
-    y2 = acf[pos + 1]
+  const y0 = acf[pos - 1]
+  const y1 = acf[pos]
+  const y2 = acf[pos + 1]
   const d = y0 - 2 * y1 + y2
   const refined = d !== 0 ? pos - (y2 - y0) / (2 * d) : pos
-
   const hz = sr / refined
   if (hz < 60 || hz > 2000) {
     return null
@@ -463,7 +847,7 @@ export function eng_detect_pitch(e: eng_t): pitch_info_t | null {
   const semis = 12 * Math.log2(hz / 440)
   const midi = Math.round(semis) + 69
   const cents = Math.round((semis - (midi - 69)) * 100)
-  const note = NOTE_NAMES[((midi % 12) + 12) % 12] + String(Math.floor(midi / 12 - 1))
+  const note = (NOTE_NAMES[((midi % 12) + 12) % 12] ?? '') + String(Math.floor(midi / 12 - 1))
   return { hz: Math.round(hz * 10) / 10, note, cents }
 }
 
@@ -485,11 +869,8 @@ export async function eng_start_mic(e: eng_t): Promise<boolean> {
   }
   e.mic_stream = stream
   e.mic_src = e.ctx.createMediaStreamSource(stream)
-
   e.mic_src.connect(e.mic_gain)
-  if (e.ctx.state === 'suspended') {
-    await e.ctx.resume()
-  }
+  eng_resume(e)
   return true
 }
 
@@ -506,120 +887,106 @@ export function eng_stop_mic(e: eng_t): void {
   }
 }
 
-export function eng_detect_bpm(e: eng_t, ch0: Float32Array, sr: number): void {
-  const job = ++e.bpm_job
-  if (e.bpm_worker) {
-    e.bpm_worker.terminate()
-    e.bpm_worker = null
-  }
-  const blob = new Blob([BPM_WORKER_CODE], { type: 'application/javascript' })
-  const url = URL.createObjectURL(blob)
-  const w = new Worker(url)
-  URL.revokeObjectURL(url)
-  e.bpm_worker = w
-  w.postMessage({ sampleRate: sr, channel: ch0 }, [ch0.buffer])
-  w.onmessage = (ev: MessageEvent) => {
-    const d = ev.data as {
-      type: string
-      value: number
+function port_wait(port: MessagePort, id: number, ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    let done = false
+    const fin = (): void => {
+      if (!done) {
+        done = true
+        port.removeEventListener('message', on)
+        resolve()
+      }
     }
-    if (d.type === 'bpm' && job === e.bpm_job) {
-      emit(e, { type: 'bpm', value: d.value })
+    const on = (ev: MessageEvent<unknown>): void => {
+      const d = ev.data
+      if (msg_type(d) === 'pong' && is_rec(d) && num_or(field(d, 'id'), -1) === id) {
+        fin()
+      }
     }
-    w.terminate()
-    if (e.bpm_worker === w) {
-      e.bpm_worker = null
-    }
-  }
+    port.addEventListener('message', on)
+    port.start()
+    window.setTimeout(fin, ms)
+  })
+}
+
+export type render_src_t = {
+  ch: Float32Array[]
+  sr: number
+  start: number
+  end: number
 }
 
 export async function eng_render_offline(
-  e: eng_t,
-  audio_data: ArrayBuffer,
-  st: player_state_t,
+  src: render_src_t,
+  m: mix_params_t,
+  on_progress: (t: number) => void,
 ): Promise<AudioBuffer> {
-  const decoded = await eng_decode(e, audio_data.slice(0))
-  const sr = decoded.sampleRate
-
-  const out_len = Math.ceil((decoded.duration / st.tempo) * sr) + 16384
-  const n_ch = decoded.numberOfChannels
-  const off = new OfflineAudioContext(n_ch, out_len, sr)
-
-  for (const code of ALL_WORKLETS) {
-    await worklet_add(off, code)
+  const sr = src.sr
+  const span = Math.max(0, src.end - src.start)
+  const speed = Math.max(0.01, m.pv.tempo * m.pv.rate)
+  let tail = 0.3
+  if (m.reverb > 0) {
+    tail += ir_duration(m.reverb_type)
   }
-
-  const w_src = { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [n_ch] }
-  const w_fx = { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [n_ch] }
-  const pv = new AudioWorkletNode(off, 'pv-processor', w_src)
-  const fm = new AudioWorkletNode(off, 'fm-processor', w_fx)
-  const vc = new AudioWorkletNode(off, 'vc-processor', w_fx)
-  const md = new AudioWorkletNode(off, 'md-processor', w_fx)
-  const bc = new AudioWorkletNode(off, 'bc-processor', w_fx)
-  const cp = new AudioWorkletNode(off, 'cp-processor', w_fx)
-  const eqs = make_eq(off, st.eqGains)
-  const conv = off.createConvolver()
-  conv.buffer = make_reverb_ir(off, 2.5, 3)
-  const wet = off.createGain()
-  const dry = off.createGain()
-  const mix = off.createGain()
-  wet.gain.value = clamp(st.reverb, 0, 1)
-  dry.gain.value = 1 - st.reverb * 0.5
-
-  pv.connect(fm)
-  let node: AudioNode = fm
-  node.connect(vc)
-  node = vc
-  for (const eq of eqs) {
-    node.connect(eq)
-    node = eq
+  if (m.fx.dl_en) {
+    tail += Math.min(8, (m.fx.dl_time / 1000) * (1 + 6 * m.fx.dl_fb))
   }
-  node.connect(md)
-  md.connect(bc)
-  bc.connect(cp)
-  cp.connect(dry)
-  cp.connect(conv)
-  conv.connect(wet)
-  dry.connect(mix)
-  wet.connect(mix)
-  mix.connect(off.destination)
-
-  const channels: Float32Array[] = []
-  for (let c = 0; c < n_ch; c++) {
-    channels.push(decoded.getChannelData(c).slice())
+  const out_sec = span / speed + tail
+  const out_len = Math.ceil(out_sec * sr)
+  const off = new OfflineAudioContext(2, out_len, sr)
+  await worklet_add(off)
+  const c = chain_build(off)
+  c.out.connect(off.destination)
+  chain_apply(c, off, m, null, false)
+  const tr: ArrayBuffer[] = []
+  const chs: Float32Array[] = []
+  const i0 = Math.max(0, Math.floor(src.start * sr))
+  for (const x of src.ch) {
+    const i1 = Math.min(x.length, Math.ceil(src.end * sr))
+    const cp = x.slice(i0, Math.max(i0 + 1, i1))
+    chs.push(cp)
+    if (cp.buffer instanceof ArrayBuffer) {
+      tr.push(cp.buffer)
+    }
   }
-  pv.port.postMessage(
-    { type: 'loadBuffer', channels, sampleRate: sr },
-    channels.map((c) => c.buffer),
+  c.pv.port.postMessage({ type: 'load', ch: chs, dir: m.pv.dir }, tr)
+  c.pv.port.postMessage({
+    type: 'params',
+    pitch: m.pv.pitch,
+    tempo: m.pv.tempo,
+    rate: m.pv.rate,
+    formant: m.pv.formant ? 1 : 0,
+    dir: m.pv.dir,
+  })
+  c.pv.port.postMessage({ type: 'play' })
+  const id = Math.floor(Math.random() * 1e9)
+  const waits = [c.pv, c.fx, c.out].map((n) => {
+    const p = port_wait(n.port, id, 4000)
+    n.port.postMessage({ type: 'ping', id })
+    return p
+  })
+  const step = Math.max(1, out_sec / 40)
+  for (let t = step; t < out_sec - 0.05; t += step) {
+    const at = t
+    off.suspend(at).then(
+      () => {
+        on_progress(at / out_sec)
+        void off.resume()
+      },
+      () => {},
+    )
+  }
+  off.suspend(0).then(
+    () => {
+      void Promise.all(waits).then(() => off.resume())
+    },
+    () => {
+      void Promise.all(waits)
+    },
   )
-  pv.port.postMessage({ type: 'setPitch', semitones: st.pitch })
-  pv.port.postMessage({ type: 'setTempo', tempo: st.tempo })
-  if (st.reverse) {
-    pv.port.postMessage({ type: 'reverse' })
-  }
-  pv.port.postMessage({ type: 'play' })
-
-  param_set(vc, 'enabled', st.vocalCancel ? 1 : 0, 0)
-  param_set(bc, 'bits', st.bitcrusherBits, 0)
-  param_set(bc, 'reduction', st.bitcrusherReduction, 0)
-  param_set(bc, 'enabled', st.bitcrusherEnabled ? 1 : 0, 0)
-
-  param_set(fm, 'enabled', st.formant ? 1 : 0, 0)
-  param_set(fm, 'pitchRatio', semis_to_ratio(st.pitch), 0)
-  param_set(md, 'mode', ({ fl: 0, ch: 1, ph: 2 } as Record<string, number>)[st.mod.mode] ?? 0, 0)
-  param_set(md, 'rate', st.mod.rate, 0)
-  param_set(md, 'depth', st.mod.depth, 0)
-  param_set(md, 'feedback', st.mod.fb, 0)
-  param_set(md, 'mix', st.mod.mix, 0)
-  param_set(md, 'enabled', st.mod.en ? 1 : 0, 0)
-  param_set(cp, 'threshold', st.comp.thr, 0)
-  param_set(cp, 'ratio', st.comp.rat, 0)
-  param_set(cp, 'attack', st.comp.atk, 0)
-  param_set(cp, 'release', st.comp.rel, 0)
-  param_set(cp, 'makeup', st.comp.mkup, 0)
-  param_set(cp, 'enabled', st.comp.en ? 1 : 0, 0)
-
-  return off.startRendering()
+  const out = await off.startRendering()
+  on_progress(1)
+  return out
 }
 
 export function eng_on(e: eng_t, h: eng_listener_t): void {
@@ -628,33 +995,4 @@ export function eng_on(e: eng_t, h: eng_listener_t): void {
 
 export function eng_off(e: eng_t, h: eng_listener_t): void {
   e.listeners = e.listeners.filter((x) => x !== h)
-}
-
-export async function eng_dispose(e: eng_t): Promise<void> {
-  eng_stop_mic(e)
-  const nodes: (AudioNode | null)[] = [
-    e.pv,
-    e.fm,
-    e.vc,
-    e.md,
-    e.bc,
-    e.cp,
-    e.fx_in,
-    e.mic_gain,
-    e.conv,
-    e.wet,
-    e.dry,
-    e.mix,
-    e.master,
-    e.analyser,
-  ]
-  for (const n of nodes) {
-    n?.disconnect()
-  }
-  for (const n of e.eqs) {
-    n.disconnect()
-  }
-  e.bpm_worker?.terminate()
-  e.silent_el?.remove()
-  await e.ctx.close()
 }

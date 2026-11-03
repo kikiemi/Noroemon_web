@@ -77,6 +77,8 @@ export type icon_t =
   | 'x'
   | 'pencil'
   | 'grip'
+  | 'repeatmk'
+  | 'chev'
 
 const STROKE: Readonly<Record<string, string>> = {
   fill: 'none',
@@ -116,6 +118,11 @@ const ICON_BUILDERS: Readonly<Record<icon_t, () => SVGElement[]>> = {
   repeat: () => [svg_el('path', { d: REPEAT_D, ...STROKE })],
   repeat1: () => [svg_el('path', { d: REPEAT_D, ...STROKE }), icon_label('1', '9')],
   repeatab: () => [svg_el('path', { d: REPEAT_D, ...STROKE }), icon_label('AB', '8')],
+  repeatmk: () => [
+    svg_el('path', { d: REPEAT_D, ...STROKE }),
+    svg_el('path', { d: 'M12 9.2l2.8 2.8-2.8 2.8-2.8-2.8z', fill: 'currentColor' }),
+  ],
+  chev: () => [svg_el('path', { d: 'M6 9l6 6 6-6', ...STROKE })],
   list: () => [
     svg_el('path', {
       d: 'M9 6h11M9 12h11M9 18h11',
@@ -201,4 +208,10 @@ export function body_dataset(key: string, value: string): void {
 
 export function body_append(el: HTMLElement): void {
   document.body.appendChild(el)
+}
+
+export function ptr_capture(el: Element, id: number): void {
+  try {
+    el.setPointerCapture(id)
+  } catch {}
 }

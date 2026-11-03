@@ -1,15 +1,18 @@
 {
   "name": "noroemon",
-  "version": "2.0.0",
+  "version": "3.0.0",
   "description": "黙々ノロえもん - ブラウザ完結の音楽プレイヤー",
   "type": "module",
   "scripts": {
-    "build": "tsc && prettier --write \"dist/**/*.js\"",
+    "build": "tsc -p tsconfig.json && tsc -p tsconfig.worker.json && tsc -p tsconfig.worklet.json && prettier --write \"dist/**/*.js\"",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.worker.json --noEmit && tsc -p tsconfig.worklet.json --noEmit",
+    "vendor": "node tools/vendor_ort.mjs",
     "format": "prettier --write \"src/**/*.ts\" \"dist/**/*.js\" service-worker.js"
   },
   "license": "CC0-1.0",
   "devDependencies": {
-    "typescript": "5.7",
-    "prettier": "3.6.2"
+    "onnxruntime-web": "1.22.0",
+    "prettier": "3.6.2",
+    "typescript": "5.7"
   }
 }

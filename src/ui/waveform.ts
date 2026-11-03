@@ -1,51 +1,75 @@
+import { ptr_capture } from './dom.js'
 import { theme_colors, theme_on_change } from './theme.js'
 
 export type wf_t = {
   canvas: HTMLCanvasElement
   ctx: CanvasRenderingContext2D
+  layer_a: HTMLCanvasElement
+  layer_b: HTMLCanvasElement
+  layers_ok: boolean
   peaks: Float32Array
   negs: Float32Array
   pos: number
   dur: number
   loop_s: number
   loop_e: number
+  markers: number[]
   mirrored: boolean
-  worker: Worker | null
   on_seek: ((t: number) => void) | null
   on_loop: ((s: number, e: number) => void) | null
+  on_marker_del: ((i: number) => void) | null
 }
 
-const PEAK_WORKER_SRC = `
-'use strict'
-self.onmessage = function (e) {
-  var data = e.data,
-    buckets = 1024
-  var per = Math.floor(data.length / buckets) || 1
-  var peaks = new Float32Array(buckets)
-  var negs = new Float32Array(buckets)
-  for (var i = 0; i < buckets; i++) {
-    var mx = 0,
-      mn = 0,
-      st = i * per
-    var end = Math.min(st + per, data.length)
-    for (var j = st; j < end; j++) {
-      var v = data[j]
-      if (v > mx) {
-        mx = v
-      }
-      if (v < mn) {
-        mn = v
-      }
+const MARK_HIT = 8
+
+function layers_build(w: wf_t): void {
+  const dpr = window.devicePixelRatio || 1
+  const cw = w.canvas.width
+  const ch = w.canvas.height
+  w.layers_ok = true
+  for (const pass of [0, 1]) {
+    const lc = pass === 0 ? w.layer_a : w.layer_b
+    lc.width = cw
+    lc.height = ch
+    const c = lc.getContext('2d')
+    if (!c || cw <= 0 || ch <= 0) {
+      continue
     }
-    peaks[i] = mx
-    negs[i] = mn
+    c.setTransform(dpr, 0, 0, dpr, 0, 0)
+    c.clearRect(0, 0, cw / dpr, ch / dpr)
+    const n = w.peaks.length
+    if (n === 0) {
+      continue
+    }
+    const col = theme_colors()
+    const vw = cw / dpr
+    const vh = ch / dpr
+    const mid = vh / 2
+    const cols = Math.max(1, Math.floor(vw / 2))
+    const bw = vw / cols
+    c.fillStyle = pass === 0 ? col.line + '33' : col.accent
+    c.beginPath()
+    for (let x = 0; x < cols; x++) {
+      const i0 = Math.floor((x * n) / cols)
+      const i1 = Math.max(i0 + 1, Math.floor(((x + 1) * n) / cols))
+      let hi = 0
+      let lo = 0
+      for (let i = i0; i < i1 && i < n; i++) {
+        const p = w.peaks[i] ?? 0
+        const q = w.negs[i] ?? 0
+        if (p > hi) {
+          hi = p
+        }
+        if (q < lo) {
+          lo = q
+        }
+      }
+      const ph = hi * mid * 0.92
+      const nh = -lo * mid * 0.92
+      c.rect(x * bw, mid - ph, Math.max(bw - 0.6, 0.8), Math.max(ph + nh, 1))
+    }
+    c.fill()
   }
-  self.postMessage({ peaks: peaks, negs: negs }, [peaks.buffer, negs.buffer])
-}
-`
-
-function to_view(w: wf_t, t: number): number {
-  return w.mirrored ? 1 - t : t
 }
 
 export function wf_draw(w: wf_t): void {
@@ -56,27 +80,15 @@ export function wf_draw(w: wf_t): void {
   if (cw <= 0 || ch <= 0) {
     return
   }
+  c.setTransform(1, 0, 0, 1, 0, 0)
+  c.clearRect(0, 0, w.canvas.width, w.canvas.height)
   c.setTransform(dpr, 0, 0, dpr, 0, 0)
-  c.clearRect(0, 0, cw, ch)
-  if (w.peaks.length === 0) {
-    return
-  }
-
   const col = theme_colors()
-  const mid = ch / 2
-  const n = w.peaks.length
-  const bw = cw / n
-  const view_pos = to_view(w, w.pos)
-  const px = view_pos * cw
+  const px = w.dur > 0 ? Math.min(Math.max(w.pos, 0), 1) * cw : 0
 
   if (w.loop_s >= 0 && w.loop_e > w.loop_s && w.dur > 0) {
-    let lx = to_view(w, w.loop_s / w.dur) * cw
-    let rx = to_view(w, w.loop_e / w.dur) * cw
-    if (lx > rx) {
-      const t = lx
-      lx = rx
-      rx = t
-    }
+    const lx = (w.loop_s / w.dur) * cw
+    const rx = (w.loop_e / w.dur) * cw
     c.fillStyle = col.accent_soft
     c.fillRect(lx, 0, rx - lx, ch)
     c.strokeStyle = col.accent
@@ -89,20 +101,43 @@ export function wf_draw(w: wf_t): void {
     c.stroke()
   }
 
-  for (let pass = 0; pass < 2; pass++) {
-    c.fillStyle = pass === 0 ? col.line + '33' : col.accent
-    c.beginPath()
-    for (let i = 0; i < n; i++) {
-      const x = i * bw
-      const played = w.mirrored ? x + bw > px : x < px
-      if ((pass === 1) !== played) {
-        continue
-      }
-      const ph = w.peaks[i] * mid * 0.92
-      const nh = -w.negs[i] * mid * 0.92
-      c.rect(x, mid - ph, Math.max(bw - 1, 1), Math.max(ph + nh, 1))
+  if (w.peaks.length > 0) {
+    if (!w.layers_ok) {
+      layers_build(w)
     }
-    c.fill()
+    c.setTransform(1, 0, 0, 1, 0, 0)
+    const W = w.canvas.width
+    const H = w.canvas.height
+    const pxd = Math.round(px * dpr)
+    c.drawImage(w.layer_a, 0, 0)
+    if (w.mirrored) {
+      if (W - pxd > 0) {
+        c.drawImage(w.layer_b, pxd, 0, W - pxd, H, pxd, 0, W - pxd, H)
+      }
+    } else if (pxd > 0) {
+      c.drawImage(w.layer_b, 0, 0, pxd, H, 0, 0, pxd, H)
+    }
+    c.setTransform(dpr, 0, 0, dpr, 0, 0)
+  }
+
+  if (w.dur > 0 && w.markers.length > 0) {
+    c.fillStyle = col.ink
+    c.strokeStyle = col.ink
+    c.lineWidth = 1.5
+    for (const m of w.markers) {
+      const x = (m / w.dur) * cw
+      c.beginPath()
+      c.moveTo(x, 7)
+      c.lineTo(x, ch)
+      c.stroke()
+      c.beginPath()
+      c.moveTo(x, 0)
+      c.lineTo(x + 4, 4)
+      c.lineTo(x, 8)
+      c.lineTo(x - 4, 4)
+      c.closePath()
+      c.fill()
+    }
   }
 
   c.strokeStyle = col.panel
@@ -119,36 +154,19 @@ export function wf_draw(w: wf_t): void {
   c.stroke()
 }
 
-export function wf_set_buffer(w: wf_t, buf: AudioBuffer): void {
-  w.dur = buf.duration
+export function wf_reset(w: wf_t, dur: number): void {
+  w.dur = dur
   w.peaks = new Float32Array(0)
   w.negs = new Float32Array(0)
+  w.layers_ok = false
   wf_draw(w)
+}
 
-  if (w.worker) {
-    w.worker.terminate()
-    w.worker = null
-  }
-  const blob = new Blob([PEAK_WORKER_SRC], { type: 'application/javascript' })
-  const url = URL.createObjectURL(blob)
-  const wk = new Worker(url)
-  URL.revokeObjectURL(url)
-  w.worker = wk
-  const copy = buf.getChannelData(0).slice()
-  wk.postMessage(copy, [copy.buffer])
-  wk.onmessage = (e: MessageEvent) => {
-    const d = e.data as {
-      peaks: Float32Array
-      negs: Float32Array
-    }
-    w.peaks = d.peaks
-    w.negs = d.negs
-    wf_draw(w)
-    wk.terminate()
-    if (w.worker === wk) {
-      w.worker = null
-    }
-  }
+export function wf_set_peaks(w: wf_t, mx: Float32Array, mn: Float32Array): void {
+  w.peaks = mx
+  w.negs = mn
+  w.layers_ok = false
+  wf_draw(w)
 }
 
 export function wf_set_pos(w: wf_t, t: number): void {
@@ -168,9 +186,32 @@ export function wf_clear_loop(w: wf_t): void {
   wf_draw(w)
 }
 
+export function wf_set_markers(w: wf_t, m: readonly number[]): void {
+  w.markers = [...m]
+  wf_draw(w)
+}
+
 export function wf_set_mirrored(w: wf_t, m: boolean): void {
   w.mirrored = m
   wf_draw(w)
+}
+
+function marker_hit(w: wf_t, cx: number): number {
+  if (w.dur <= 0) {
+    return -1
+  }
+  const r = w.canvas.getBoundingClientRect()
+  let best = -1
+  let bd = MARK_HIT
+  for (let i = 0; i < w.markers.length; i++) {
+    const x = r.left + ((w.markers[i] ?? 0) / w.dur) * r.width
+    const d = Math.abs(cx - x)
+    if (d < bd) {
+      bd = d
+      best = i
+    }
+  }
+  return best
 }
 
 export function wf_new(parent: HTMLElement): wf_t {
@@ -178,41 +219,53 @@ export function wf_new(parent: HTMLElement): wf_t {
   canvas.className = 'wf-canvas'
   parent.appendChild(canvas)
   const ctx = canvas.getContext('2d')
-
+  if (!ctx) {
+    throw new Error('Canvas 2D が使えません')
+  }
   const w: wf_t = {
     canvas,
-    ctx: ctx as CanvasRenderingContext2D,
+    ctx,
+    layer_a: document.createElement('canvas'),
+    layer_b: document.createElement('canvas'),
+    layers_ok: false,
     peaks: new Float32Array(0),
     negs: new Float32Array(0),
     pos: 0,
     dur: 0,
     loop_s: -1,
     loop_e: -1,
+    markers: [],
     mirrored: false,
-    worker: null,
     on_seek: null,
     on_loop: null,
+    on_marker_del: null,
   }
 
   const ro = new ResizeObserver(() => {
     const dpr = window.devicePixelRatio || 1
-    canvas.width = canvas.clientWidth * dpr
-    canvas.height = canvas.clientHeight * dpr
+    canvas.width = Math.round(canvas.clientWidth * dpr)
+    canvas.height = Math.round(canvas.clientHeight * dpr)
+    w.layers_ok = false
     wf_draw(w)
   })
   ro.observe(canvas)
-  theme_on_change(() => wf_draw(w))
+  theme_on_change(() => {
+    w.layers_ok = false
+    wf_draw(w)
+  })
 
   let down_x = 0
   let selecting = false
   const view_t = (cx: number): number => {
     const r = canvas.getBoundingClientRect()
-    const t = Math.min(Math.max((cx - r.left) / r.width, 0), 1)
-    return w.mirrored ? 1 - t : t
+    return Math.min(Math.max((cx - r.left) / r.width, 0), 1)
   }
   canvas.addEventListener('pointerdown', (e) => {
+    if (e.button > 0) {
+      return
+    }
     e.preventDefault()
-    canvas.setPointerCapture(e.pointerId)
+    ptr_capture(canvas, e.pointerId)
     down_x = e.clientX
     selecting = false
   })
@@ -241,7 +294,12 @@ export function wf_new(parent: HTMLElement): wf_t {
         w.on_loop(w.loop_s, w.loop_e)
       }
     } else if (w.on_seek) {
-      w.on_seek(view_t(e.clientX))
+      const mi = marker_hit(w, e.clientX)
+      if (mi >= 0 && w.dur > 0) {
+        w.on_seek((w.markers[mi] ?? 0) / w.dur)
+      } else {
+        w.on_seek(view_t(e.clientX))
+      }
     }
     selecting = false
   })
@@ -251,6 +309,12 @@ export function wf_new(parent: HTMLElement): wf_t {
     }
     selecting = false
   })
-
+  canvas.addEventListener('contextmenu', (e) => {
+    const mi = marker_hit(w, e.clientX)
+    if (mi >= 0 && w.on_marker_del) {
+      e.preventDefault()
+      w.on_marker_del(mi)
+    }
+  })
   return w
 }

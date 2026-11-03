@@ -1,15 +1,14 @@
 import { clamp } from '../types.js'
-import { h, svg_el } from './dom.js'
+import { h, svg_el, ptr_capture } from './dom.js'
 
-function fmt_val(v: number, unit: string): string {
+function fmt_val(v: number, unit: string, q: number): string {
   const a = Math.abs(v)
-  if (a >= 100) {
-    return String(Math.round(v)) + unit
+  let d = a >= 100 ? 0 : a >= 10 ? 1 : 2
+  const qd = q >= 1 ? 0 : q >= 0.1 ? 1 : 2
+  if (qd < d) {
+    d = qd
   }
-  if (a >= 10) {
-    return v.toFixed(1) + unit
-  }
-  return v.toFixed(2) + unit
+  return v.toFixed(d) + unit
 }
 
 function snap(v: number, step: number): number {
@@ -21,6 +20,7 @@ function wire_value_input(
   get: () => number,
   set: (v: number) => void,
   unit: string,
+  q: number,
 ): void {
   input.addEventListener('focus', () => {
     input.removeAttribute('readonly')
@@ -32,7 +32,7 @@ function wire_value_input(
     if (Number.isFinite(p)) {
       set(p)
     } else {
-      input.value = fmt_val(get(), unit)
+      input.value = fmt_val(get(), unit, q)
     }
   }
   input.addEventListener('blur', apply)
@@ -42,10 +42,34 @@ function wire_value_input(
     }
     if (e.key === 'Escape') {
       input.setAttribute('readonly', '')
-      input.value = fmt_val(get(), unit)
+      input.value = fmt_val(get(), unit, q)
       input.blur()
     }
   })
+}
+
+function wheel_armed(el: HTMLElement, step: (dir: number) => void): void {
+  let armed = false
+  el.addEventListener('pointerdown', () => {
+    armed = true
+  })
+  el.addEventListener('pointerleave', () => {
+    armed = false
+  })
+  el.addEventListener(
+    'wheel',
+    (e) => {
+      if (!armed) {
+        return
+      }
+      e.preventDefault()
+      const dir = e.deltaY < 0 ? 1 : e.deltaY > 0 ? -1 : 0
+      if (dir !== 0) {
+        step(dir)
+      }
+    },
+    { passive: false },
+  )
 }
 
 export type knob_t = {
@@ -58,6 +82,7 @@ export type knob_t = {
   max: number
   step: number
   def: number
+  fine: number
   unit: string
   on_change: ((v: number) => void) | null
 }
@@ -102,11 +127,15 @@ function knob_render(k: knob_t): void {
   k.needle.setAttribute('y1', String(p1.y))
   k.needle.setAttribute('x2', String(p2.x))
   k.needle.setAttribute('y2', String(p2.y))
-  k.val_el.value = fmt_val(k.value, k.unit)
+  k.val_el.value = fmt_val(k.value, k.unit, k.fine)
 }
 
 export function knob_set(k: knob_t, v: number, fire: boolean): void {
-  const nv = clamp(snap(v, k.step), k.min, k.max)
+  knob_set_q(k, v, k.fine, fire)
+}
+
+function knob_set_q(k: knob_t, v: number, q: number, fire: boolean): void {
+  const nv = clamp(Math.round(snap(v, q) * 1e6) / 1e6, k.min, k.max)
   if (nv === k.value && !fire) {
     return
   }
@@ -126,6 +155,7 @@ export function knob_new(
   step: number,
   unit: string,
   def?: number,
+  fine?: number,
 ): knob_t {
   const arc = svg_el('path', { class: 'knob-arc' })
   const needle = svg_el('line', { class: 'knob-needle' })
@@ -156,6 +186,7 @@ export function knob_new(
     max,
     step,
     def: def ?? value,
+    fine: fine ?? step,
     unit,
     on_change: null,
   }
@@ -165,7 +196,7 @@ export function knob_new(
 
   svg.addEventListener('pointerdown', (e) => {
     e.preventDefault()
-    svg.setPointerCapture(e.pointerId)
+    ptr_capture(svg, e.pointerId)
     drag_y = e.clientY
     drag_v = k.value
     root.classList.add('active')
@@ -176,8 +207,20 @@ export function knob_new(
     }
     const fine = e.shiftKey ? 0.1 : 1
     const dv = (((drag_y - e.clientY) * (k.max - k.min)) / 200) * fine
-    knob_set(k, drag_v + dv, true)
+    knob_set_q(k, drag_v + dv, e.shiftKey ? k.fine : k.step, true)
   })
+  svg.addEventListener(
+    'wheel',
+    (e) => {
+      e.preventDefault()
+      const q = e.shiftKey ? k.fine : k.step
+      const dir = e.deltaY < 0 ? 1 : e.deltaY > 0 ? -1 : 0
+      if (dir !== 0) {
+        knob_set_q(k, k.value + dir * q, q, true)
+      }
+    },
+    { passive: false },
+  )
   const up = (e: PointerEvent): void => {
     if (svg.hasPointerCapture(e.pointerId)) {
       svg.releasePointerCapture(e.pointerId)
@@ -191,8 +234,9 @@ export function knob_new(
   wire_value_input(
     k.val_el,
     () => k.value,
-    (v) => knob_set(k, v, true),
+    (v) => knob_set_q(k, v, k.fine, true),
     unit,
+    k.fine,
   )
 
   knob_render(k)
@@ -218,7 +262,7 @@ function slider_render(s: slider_t): void {
   const t = (s.value - s.min) / (s.max - s.min)
   s.fill.style.width = t * 100 + '%'
   s.thumb.style.left = t * 100 + '%'
-  s.val_el.value = fmt_val(s.value, s.unit)
+  s.val_el.value = fmt_val(s.value, s.unit, s.step)
 }
 
 export function slider_set(s: slider_t, v: number, fire: boolean): void {
@@ -279,7 +323,7 @@ export function slider_new(
   }
   s.track.addEventListener('pointerdown', (e) => {
     e.preventDefault()
-    s.track.setPointerCapture(e.pointerId)
+    ptr_capture(s.track, e.pointerId)
     slider_set(s, from_x(e.clientX), true)
   })
   s.track.addEventListener('pointermove', (e) => {
@@ -296,11 +340,13 @@ export function slider_new(
   s.track.addEventListener('pointerup', up)
   s.track.addEventListener('pointercancel', up)
   s.track.addEventListener('dblclick', () => slider_set(s, s.def, true))
+  wheel_armed(s.track, (dir) => slider_set(s, s.value + dir * s.step, true))
   wire_value_input(
     s.val_el,
     () => s.value,
     (v) => slider_set(s, v, true),
     unit,
+    s.step,
   )
 
   slider_render(s)
@@ -317,7 +363,7 @@ export type eq_bank_t = {
 const EQ_RANGE = 12
 
 function eq_render_one(b: eq_bank_t, i: number): void {
-  const t = (b.values[i] + EQ_RANGE) / (EQ_RANGE * 2)
+  const t = ((b.values[i] ?? 0) + EQ_RANGE) / (EQ_RANGE * 2)
   const f = b.fills[i]
   if (f) {
     f.style.height = t * 100 + '%'
@@ -379,7 +425,7 @@ export function eq_bank_new(
     }
     bar.addEventListener('pointerdown', (e) => {
       e.preventDefault()
-      bar.setPointerCapture(e.pointerId)
+      ptr_capture(bar, e.pointerId)
       apply(e.clientY)
     })
     bar.addEventListener('pointermove', (e) => {
@@ -394,6 +440,16 @@ export function eq_bank_new(
     }
     bar.addEventListener('pointerup', up)
     bar.addEventListener('pointercancel', up)
+    wheel_armed(bar, (dir) => {
+      const v = clamp((b.values[i] ?? 0) + dir * 0.5, -EQ_RANGE, EQ_RANGE)
+      if (v !== b.values[i]) {
+        b.values[i] = v
+        eq_render_one(b, i)
+        if (b.on_change) {
+          b.on_change(i, v)
+        }
+      }
+    })
     bar.addEventListener('dblclick', () => {
       b.values[i] = 0
       eq_render_one(b, i)

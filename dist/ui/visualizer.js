@@ -123,9 +123,13 @@ export function vz_new(parent) {
   const canvas = document.createElement('canvas')
   canvas.className = 'vz-canvas'
   parent.appendChild(canvas)
+  const ctx = canvas.getContext('2d')
+  if (!ctx) {
+    throw new Error('Canvas 2D が使えません')
+  }
   const v = {
     canvas,
-    ctx: canvas.getContext('2d'),
+    ctx,
     analyser: null,
     freq: new Uint8Array(new ArrayBuffer(0)),
     time: new Uint8Array(new ArrayBuffer(0)),

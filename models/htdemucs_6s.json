@@ -1,0 +1,36 @@
+{
+  "name": "htdemucs_6s",
+  "kind": "htdemucs",
+  "samplerate": 44100,
+  "segment": 343980,
+  "nfft": 4096,
+  "hop": 1024,
+  "sources": [
+    "drums",
+    "bass",
+    "other",
+    "vocals",
+    "guitar",
+    "piano"
+  ],
+  "models": [
+    {
+      "file": "htdemucs_6s.onnx",
+      "weights": [
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ],
+      "parts": [
+        "htdemucs_6s.onnx.000",
+        "htdemucs_6s.onnx.001",
+        "htdemucs_6s.onnx.002",
+        "htdemucs_6s.onnx.003"
+      ],
+      "bytes": 131071644
+    }
+  ]
+}

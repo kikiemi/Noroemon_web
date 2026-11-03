@@ -8,6 +8,7 @@ import {
   by_id,
   body_dataset,
   body_append,
+  ptr_capture,
 } from './dom.js'
 import { knob_new, slider_new, eq_bank_new } from './widgets.js'
 import type { knob_t, slider_t, eq_bank_t } from './widgets.js'
@@ -22,6 +23,7 @@ import {
   LOOP_NONE,
   LOOP_SINGLE,
   LOOP_AB,
+  LOOP_MARK,
   LOOP_ALL,
   PLAY_SEQ,
   PLAY_SHUFFLE,
@@ -34,6 +36,19 @@ import {
   VIZ_WAVE,
   PITCH_MIN,
   PITCH_MAX,
+  TEMPO_MIN,
+  TEMPO_MAX,
+  RATE_MIN,
+  RATE_MAX,
+  SPECIALS,
+  REVERB_TYPES,
+  EXPORT_16,
+  EXPORT_24,
+  EXPORT_32F,
+  AI_AUTO,
+  AI_WEBGPU,
+  AI_WASM,
+  STEM_NAMES,
 } from '../types.js'
 import type {
   player_state_t,
@@ -41,6 +56,8 @@ import type {
   play_mode_t,
   theme_mode_t,
   viz_mode_t,
+  export_fmt_t,
+  ai_backend_t,
 } from '../types.js'
 
 export type mobile_view_t = 'playlist' | 'player' | 'fx'
@@ -54,6 +71,9 @@ export type refs_t = {
   btn_loop_mode: HTMLElement
   btn_play_mode: HTMLElement
   btn_ab_clear: HTMLElement
+  btn_set_a: HTMLElement
+  btn_set_b: HTMLElement
+  btn_marker: HTMLElement
   btn_vocal: HTMLElement
   btn_reverse: HTMLElement
   btn_bc_toggle: HTMLElement
@@ -61,6 +81,11 @@ export type refs_t = {
   btn_formant: HTMLElement
   btn_mod_toggle: HTMLElement
   btn_comp_toggle: HTMLElement
+  btn_delay_toggle: HTMLElement
+  btn_dist_toggle: HTMLElement
+  btn_click: HTMLElement
+  btn_sep_run: HTMLElement
+  btn_reset_all: HTMLElement
   btn_settings: HTMLElement
   btn_theme: HTMLElement
   btn_mic: HTMLElement
@@ -73,85 +98,179 @@ export type refs_t = {
   time_total: HTMLElement
   track_name: HTMLElement
   bpm_display: HTMLElement
+  key_display: HTMLElement
   pitch_display: HTMLElement
   param_area: HTMLElement
   eq_area: HTMLElement
-  eq_preset_select: HTMLSelectElement
   fx_area: HTMLElement
   mod_area: HTMLElement
-  mod_mode_select: HTMLSelectElement
   comp_area: HTMLElement
+  delay_area: HTMLElement
+  dist_area: HTMLElement
+  stereo_area: HTMLElement
+  practice_area: HTMLElement
+  sep_area: HTMLElement
   waveform_area: HTMLElement
   viz_container: HTMLElement
   playlist_list: HTMLElement
+  eq_preset_select: HTMLSelectElement
+  mod_mode_select: HTMLSelectElement
+  preset_select: HTMLSelectElement
+  reverb_type_select: HTMLSelectElement
+  delay_preset_select: HTMLSelectElement
+  ch_mode_select: HTMLSelectElement
+  special_select: HTMLSelectElement
   export_default: Node[]
 }
 
-const REF_IDS = {
-  btn_open: 'btn-open',
-  btn_play: 'btn-play',
-  btn_stop: 'btn-stop',
-  btn_prev: 'btn-prev',
-  btn_next: 'btn-next',
-  btn_loop_mode: 'btn-loop-mode',
-  btn_play_mode: 'btn-play-mode',
-  btn_ab_clear: 'btn-ab-clear',
-  btn_vocal: 'btn-vocal',
-  btn_reverse: 'btn-reverse',
-  btn_bc_toggle: 'btn-bc-toggle',
-  btn_export: 'btn-export',
-  btn_formant: 'btn-formant',
-  btn_mod_toggle: 'btn-mod-toggle',
-  btn_comp_toggle: 'btn-comp-toggle',
-  btn_settings: 'btn-settings',
-  btn_theme: 'btn-theme',
-  btn_mic: 'btn-mic',
-  btn_add_playlist: 'btn-add-playlist',
-  btn_add_track: 'btn-add-track',
-  nav_player: 'nav-player',
-  nav_playlist: 'nav-playlist',
-  nav_fx: 'nav-fx',
-  time_current: 'time-current',
-  time_total: 'time-total',
-  track_name: 'track-name',
-  bpm_display: 'bpm-display',
-  pitch_display: 'pitch-display',
-  param_area: 'param-area',
-  eq_area: 'eq-area',
-  eq_preset_select: 'eq-preset-select',
-  fx_area: 'fx-area',
-  mod_area: 'mod-area',
-  mod_mode_select: 'mod-mode-select',
-  comp_area: 'comp-area',
-  waveform_area: 'waveform-area',
-  viz_container: 'viz-container',
-  playlist_list: 'playlist-list',
-} as const
+const EL_IDS: readonly string[] = [
+  'btn-open',
+  'btn-play',
+  'btn-stop',
+  'btn-prev',
+  'btn-next',
+  'btn-loop-mode',
+  'btn-play-mode',
+  'btn-ab-clear',
+  'btn-set-a',
+  'btn-set-b',
+  'btn-marker',
+  'btn-vocal',
+  'btn-reverse',
+  'btn-bc-toggle',
+  'btn-export',
+  'btn-formant',
+  'btn-mod-toggle',
+  'btn-comp-toggle',
+  'btn-delay-toggle',
+  'btn-dist-toggle',
+  'btn-click',
+  'btn-sep-run',
+  'btn-reset-all',
+  'btn-settings',
+  'btn-theme',
+  'btn-mic',
+  'btn-add-playlist',
+  'btn-add-track',
+  'nav-player',
+  'nav-playlist',
+  'nav-fx',
+  'time-current',
+  'time-total',
+  'track-name',
+  'bpm-display',
+  'key-display',
+  'pitch-display',
+  'param-area',
+  'eq-area',
+  'fx-area',
+  'mod-area',
+  'comp-area',
+  'delay-area',
+  'dist-area',
+  'stereo-area',
+  'practice-area',
+  'sep-area',
+  'waveform-area',
+  'viz-container',
+  'playlist-list',
+]
+
+const SEL_IDS: readonly string[] = [
+  'eq-preset-select',
+  'mod-mode-select',
+  'preset-select',
+  'reverb-type-select',
+  'delay-preset-select',
+  'ch-mode-select',
+  'special-select',
+]
+
+function need(id: string): HTMLElement {
+  const el = by_id(id)
+  if (!el) {
+    throw new Error('DOM要素が見つかりません: #' + id)
+  }
+  return el
+}
+
+function need_sel(id: string): HTMLSelectElement {
+  const el = by_id(id)
+  if (!(el instanceof HTMLSelectElement)) {
+    throw new Error('#' + id + ' はselect要素である必要があります')
+  }
+  return el
+}
 
 export function refs_init(): refs_t {
-  const found: Record<string, HTMLElement> = {}
   const missing: string[] = []
-  for (const [key, id] of Object.entries(REF_IDS)) {
-    const el = by_id(id)
-    if (el) {
-      found[key] = el
-    } else {
+  for (const id of [...EL_IDS, ...SEL_IDS]) {
+    if (!by_id(id)) {
       missing.push('#' + id)
     }
   }
   if (missing.length > 0) {
     throw new Error('DOM要素が見つかりません: ' + missing.join(', ') + '(index.htmlが壊れています)')
   }
-  const sel_eq = found['eq_preset_select']
-  const sel_mod = found['mod_mode_select']
-  if (!(sel_eq instanceof HTMLSelectElement) || !(sel_mod instanceof HTMLSelectElement)) {
-    throw new Error('#eq-preset-select / #mod-mode-select はselect要素である必要があります')
-  }
-  const btn_export = found['btn_export'] as HTMLElement
+  const btn_export = need('btn-export')
   return {
-    ...(found as Omit<refs_t, 'eq_preset_select' | 'mod_mode_select' | 'export_default'>),
-    eq_preset_select: sel_eq,
-    mod_mode_select: sel_mod,
+    btn_open: need('btn-open'),
+    btn_play: need('btn-play'),
+    btn_stop: need('btn-stop'),
+    btn_prev: need('btn-prev'),
+    btn_next: need('btn-next'),
+    btn_loop_mode: need('btn-loop-mode'),
+    btn_play_mode: need('btn-play-mode'),
+    btn_ab_clear: need('btn-ab-clear'),
+    btn_set_a: need('btn-set-a'),
+    btn_set_b: need('btn-set-b'),
+    btn_marker: need('btn-marker'),
+    btn_vocal: need('btn-vocal'),
+    btn_reverse: need('btn-reverse'),
+    btn_bc_toggle: need('btn-bc-toggle'),
+    btn_export,
+    btn_formant: need('btn-formant'),
+    btn_mod_toggle: need('btn-mod-toggle'),
+    btn_comp_toggle: need('btn-comp-toggle'),
+    btn_delay_toggle: need('btn-delay-toggle'),
+    btn_dist_toggle: need('btn-dist-toggle'),
+    btn_click: need('btn-click'),
+    btn_sep_run: need('btn-sep-run'),
+    btn_reset_all: need('btn-reset-all'),
+    btn_settings: need('btn-settings'),
+    btn_theme: need('btn-theme'),
+    btn_mic: need('btn-mic'),
+    btn_add_playlist: need('btn-add-playlist'),
+    btn_add_track: need('btn-add-track'),
+    nav_player: need('nav-player'),
+    nav_playlist: need('nav-playlist'),
+    nav_fx: need('nav-fx'),
+    time_current: need('time-current'),
+    time_total: need('time-total'),
+    track_name: need('track-name'),
+    bpm_display: need('bpm-display'),
+    key_display: need('key-display'),
+    pitch_display: need('pitch-display'),
+    param_area: need('param-area'),
+    eq_area: need('eq-area'),
+    fx_area: need('fx-area'),
+    mod_area: need('mod-area'),
+    comp_area: need('comp-area'),
+    delay_area: need('delay-area'),
+    dist_area: need('dist-area'),
+    stereo_area: need('stereo-area'),
+    practice_area: need('practice-area'),
+    sep_area: need('sep-area'),
+    waveform_area: need('waveform-area'),
+    viz_container: need('viz-container'),
+    playlist_list: need('playlist-list'),
+    eq_preset_select: need_sel('eq-preset-select'),
+    mod_mode_select: need_sel('mod-mode-select'),
+    preset_select: need_sel('preset-select'),
+    reverb_type_select: need_sel('reverb-type-select'),
+    delay_preset_select: need_sel('delay-preset-select'),
+    ch_mode_select: need_sel('ch-mode-select'),
+    special_select: need_sel('special-select'),
     export_default: Array.from(btn_export.childNodes),
   }
 }
@@ -173,42 +292,26 @@ export function view_fatal(msg: string): void {
   )
 }
 
-export function view_splash(start: () => Promise<void>): boolean {
-  const splash = by_id('splash')
-  if (!splash) {
-    return false
-  }
-  let started = false
-  const on_tap = (): void => {
-    if (started) {
-      return
-    }
-    started = true
-    const label = splash.querySelector('.splash-tap')
-    if (label) {
-      label.textContent = '起動中...'
-    }
-    void start()
-      .then(() => {
-        splash.remove()
-      })
-      .catch((err: unknown) => {
-        splash.remove()
-        view_fatal(err instanceof Error ? (err.stack ?? err.message) : String(err))
-      })
-  }
-  splash.addEventListener('pointerdown', on_tap)
-  splash.addEventListener('click', on_tap)
-  return true
+let booted = false
+
+export function view_booted(): void {
+  booted = true
 }
 
 export function view_global_errors(): void {
   window.addEventListener('error', (e: ErrorEvent) => {
+    if (e.error === null && e.message.startsWith('ResizeObserver')) {
+      return
+    }
+    if (booted) {
+      view_toast('エラー: ' + e.message, true)
+      return
+    }
     view_fatal(e.message + '\n' + (e.filename ?? '') + ':' + String(e.lineno ?? ''))
   })
   window.addEventListener('unhandledrejection', (e: PromiseRejectionEvent) => {
     const r: unknown = e.reason
-    view_fatal(r instanceof Error ? (r.stack ?? r.message) : String(r))
+    view_toast('エラー: ' + (r instanceof Error ? r.message : String(r)), true)
   })
 }
 
@@ -261,12 +364,14 @@ export function view_loop_btn(refs: refs_t, mode: loop_mode_t): void {
     [LOOP_NONE]: svg_icon('repeat', 17),
     [LOOP_SINGLE]: svg_icon('repeat1', 17),
     [LOOP_AB]: svg_icon('repeatab', 17),
+    [LOOP_MARK]: svg_icon('repeatmk', 17),
     [LOOP_ALL]: svg_icon('repeat', 17),
   }
   const titles: Record<loop_mode_t, string> = {
     [LOOP_NONE]: 'ループ: なし',
     [LOOP_SINGLE]: 'ループ: 1曲',
     [LOOP_AB]: 'ループ: A-B区間',
+    [LOOP_MARK]: 'ループ: マーカー間',
     [LOOP_ALL]: 'ループ: 全曲',
   }
   el_swap(refs.btn_loop_mode, icons[mode])
@@ -292,6 +397,18 @@ export function view_play_mode_btn(refs: refs_t, mode: play_mode_t): void {
   el_active(refs.btn_play_mode, mode !== PLAY_SEQ)
 }
 
+export type toggle_key_t =
+  | 'btn_vocal'
+  | 'btn_reverse'
+  | 'btn_bc_toggle'
+  | 'btn_formant'
+  | 'btn_mod_toggle'
+  | 'btn_comp_toggle'
+  | 'btn_delay_toggle'
+  | 'btn_dist_toggle'
+  | 'btn_click'
+  | 'btn_mic'
+
 export function view_toggles(refs: refs_t, st: player_state_t): void {
   el_active(refs.btn_vocal, st.vocalCancel)
   el_active(refs.btn_reverse, st.reverse)
@@ -299,20 +416,12 @@ export function view_toggles(refs: refs_t, st: player_state_t): void {
   el_active(refs.btn_formant, st.formant)
   el_active(refs.btn_mod_toggle, st.mod.en)
   el_active(refs.btn_comp_toggle, st.comp.en)
+  el_active(refs.btn_delay_toggle, st.delay.en)
+  el_active(refs.btn_dist_toggle, st.dist.en)
+  el_active(refs.btn_click, st.practice.click)
 }
 
-export function view_toggle(
-  refs: refs_t,
-  key:
-    | 'btn_vocal'
-    | 'btn_reverse'
-    | 'btn_bc_toggle'
-    | 'btn_formant'
-    | 'btn_mod_toggle'
-    | 'btn_comp_toggle'
-    | 'btn_mic',
-  on: boolean,
-): void {
+export function view_toggle(refs: refs_t, key: toggle_key_t, on: boolean): void {
   el_active(refs[key], on)
 }
 
@@ -339,8 +448,22 @@ export function view_position(refs: refs_t, wf: wf_t, cur: number, total: number
   }
 }
 
-export function view_bpm(refs: refs_t, bpm: number): void {
-  refs.bpm_display.textContent = bpm > 0 ? String(bpm) + ' BPM' : '-- BPM'
+export function view_bpm(refs: refs_t, bpm: number, speed: number): void {
+  if (!(bpm > 0)) {
+    refs.bpm_display.textContent = '-- BPM'
+    return
+  }
+  if (Math.abs(speed - 1) < 0.005) {
+    refs.bpm_display.textContent = String(bpm) + ' BPM'
+    return
+  }
+  refs.bpm_display.textContent = String(Math.round(bpm * speed * 10) / 10) + ' BPM'
+  refs.bpm_display.title = '原曲 ' + String(bpm) + ' BPM'
+}
+
+export function view_key(refs: refs_t, text: string, title: string): void {
+  refs.key_display.textContent = text === '' ? 'Key --' : text
+  refs.key_display.title = title
 }
 
 export function view_pitch_chip(refs: refs_t, text: string): void {
@@ -349,9 +472,9 @@ export function view_pitch_chip(refs: refs_t, text: string): void {
   }
 }
 
-export function view_export_busy(refs: refs_t, busy: boolean): void {
+export function view_export_busy(refs: refs_t, busy: boolean, text: string): void {
   if (busy) {
-    refs.btn_export.textContent = '書き出し中…'
+    refs.btn_export.textContent = text
     refs.btn_export.classList.add('disabled')
   } else {
     el_swap(refs.btn_export, ...refs.export_default)
@@ -372,6 +495,7 @@ export type ui_t = {
   eq: eq_bank_t
   k_pitch: knob_t
   k_tempo: knob_t
+  k_rate: knob_t
   k_vol: knob_t
   s_reverb: slider_t
   s_bits: slider_t
@@ -385,6 +509,108 @@ export type ui_t = {
   s_catk: slider_t
   s_crel: slider_t
   s_cmk: slider_t
+  s_dtime: slider_t
+  s_dfb: slider_t
+  s_dmix: slider_t
+  s_ddamp: slider_t
+  b_dpp: HTMLElement
+  s_xdrive: slider_t
+  s_xtone: slider_t
+  s_xmix: slider_t
+  s_pan: slider_t
+  s_width: slider_t
+  s_lcount: slider_t
+  s_lstep: slider_t
+  s_ltarget: slider_t
+  s_clickvol: slider_t
+  sep: sep_view_t
+}
+
+export type sep_view_t = {
+  status: HTMLElement
+  bar_track: HTMLElement
+  bar: HTMLElement
+  stems: HTMLElement
+  btns: HTMLElement
+  b_export: HTMLElement
+  b_clear: HTMLElement
+}
+
+function sep_view_new(parent: HTMLElement): sep_view_t {
+  const status = h('div', { class: 'sep-status', text: '' })
+  const bar = h('div', { class: 'sep-bar' })
+  const bar_track = h('div', { class: 'sep-bar-track' }, [bar])
+  const stems = h('div')
+  const b_export = h('button', {
+    class: 'chip-btn',
+    text: 'ステム書き出し',
+    title: '分離した各パートをWAVで保存',
+  })
+  const b_clear = h('button', { class: 'chip-btn', text: '分離を解除', title: '元の音源に戻す' })
+  const btns = h('div', { class: 'btn-row' }, [b_export, b_clear])
+  bar_track.style.display = 'none'
+  btns.style.display = 'none'
+  parent.append(status, bar_track, stems, btns)
+  return { status, bar_track, bar, stems, btns, b_export, b_clear }
+}
+
+export function sep_view_status(v: sep_view_t, text: string): void {
+  v.status.textContent = text
+}
+
+export function sep_view_progress(v: sep_view_t, frac: number | null): void {
+  if (frac === null) {
+    v.bar_track.style.display = 'none'
+    return
+  }
+  v.bar_track.style.display = ''
+  v.bar.style.width = String(Math.round(Math.min(1, Math.max(0, frac)) * 1000) / 10) + '%'
+}
+
+export function sep_view_run_btn(refs: refs_t, busy: boolean): void {
+  refs.btn_sep_run.textContent = busy ? '中止' : '分離する'
+  el_active(refs.btn_sep_run, busy)
+}
+
+export type stem_row_view_t = {
+  name: string
+  gain: number
+  mute: boolean
+  solo: boolean
+}
+
+export type stem_handlers_t = {
+  on_gain: (name: string, v: number) => void
+  on_mute: (name: string) => void
+  on_solo: (name: string) => void
+}
+
+export function sep_view_stems(
+  v: sep_view_t,
+  rows: readonly stem_row_view_t[],
+  hd: stem_handlers_t,
+): void {
+  el_clear(v.stems)
+  v.btns.style.display = rows.length > 0 ? '' : 'none'
+  for (const r of rows) {
+    const holder = h('div')
+    const s = slider_new(holder, STEM_NAMES[r.name] ?? r.name, 0, 200, r.gain * 100, 1, '%', 100)
+    s.root.classList.add('compact')
+    s.on_change = (val): void => hd.on_gain(r.name, val / 100)
+    const m = h('button', {
+      class: 'chip-btn' + (r.mute ? ' active' : ''),
+      text: 'M',
+      title: 'ミュート',
+    })
+    const so = h('button', {
+      class: 'chip-btn' + (r.solo ? ' active' : ''),
+      text: 'S',
+      title: 'ソロ',
+    })
+    m.addEventListener('click', () => hd.on_mute(r.name))
+    so.addEventListener('click', () => hd.on_solo(r.name))
+    v.stems.appendChild(h('div', { class: 'stem-row' }, [s.root, m, so]))
+  }
 }
 
 export function view_controls_new(refs: refs_t, st: player_state_t): ui_t {
@@ -392,13 +618,30 @@ export function view_controls_new(refs: refs_t, st: player_state_t): ui_t {
   const fx = refs.fx_area
   const ma = refs.mod_area
   const ca = refs.comp_area
+  const da = refs.delay_area
+  const xa = refs.dist_area
+  const sa = refs.stereo_area
+  const pr = refs.practice_area
+
+  const b_dpp = h('button', { class: 'chip-btn', text: 'ピンポン', title: '左右に跳ね返るエコー' })
 
   const ui: ui_t = {
     wf: wf_new(refs.waveform_area),
     vz: vz_new(refs.viz_container),
     eq: eq_bank_new(refs.eq_area, EQ_BANDS, st.eqGains),
-    k_pitch: knob_new(pa, 'ピッチ', PITCH_MIN, PITCH_MAX, st.pitch, 0.5, ' st', 0),
-    k_tempo: knob_new(pa, 'テンポ', 25, 400, st.tempo * 100, 1, '%', 100),
+    k_pitch: knob_new(pa, 'ピッチ', PITCH_MIN, PITCH_MAX, st.pitch, 0.5, ' st', 0, 0.01),
+    k_tempo: knob_new(
+      pa,
+      'テンポ',
+      TEMPO_MIN * 100,
+      TEMPO_MAX * 100,
+      st.tempo * 100,
+      1,
+      '%',
+      100,
+      0.1,
+    ),
+    k_rate: knob_new(pa, '周波数', RATE_MIN * 100, RATE_MAX * 100, st.rate * 100, 1, '%', 100, 0.1),
     k_vol: knob_new(pa, '音量', 0, 100, st.volume * 100, 1, '%', 80),
     s_reverb: slider_new(fx, 'リバーブ', 0, 100, st.reverb * 100, 1, '%', 0),
     s_bits: slider_new(fx, 'ビット深度', 1, 16, st.bitcrusherBits, 1, ' bit', 16),
@@ -412,17 +655,55 @@ export function view_controls_new(refs: refs_t, st: player_state_t): ui_t {
     s_catk: slider_new(ca, 'アタック', 0.1, 200, st.comp.atk, 0.1, ' ms', 10),
     s_crel: slider_new(ca, 'リリース', 10, 2000, st.comp.rel, 1, ' ms', 100),
     s_cmk: slider_new(ca, 'メイクアップ', 0, 40, st.comp.mkup, 0.5, ' dB', 0),
+    s_dtime: slider_new(da, 'ディレイ時間', 10, 2000, st.delay.time, 1, ' ms', 350),
+    s_dfb: slider_new(da, 'フィードバック', 0, 95, st.delay.fb * 100, 1, '%', 35),
+    s_dmix: slider_new(da, 'ミックス', 0, 100, st.delay.mix * 100, 1, '%', 30),
+    s_ddamp: slider_new(da, 'こもり', 0, 100, st.delay.damp * 100, 1, '%', 30),
+    b_dpp,
+    s_xdrive: slider_new(xa, 'ドライブ', 0, 48, st.dist.drive, 0.5, ' dB', 12),
+    s_xtone: slider_new(xa, 'トーン', 0, 100, st.dist.tone * 100, 1, '%', 60),
+    s_xmix: slider_new(xa, 'ミックス', 0, 100, st.dist.mix * 100, 1, '%', 100),
+    s_pan: slider_new(sa, 'パン', -100, 100, st.pan * 100, 1, '', 0),
+    s_width: slider_new(sa, 'ステレオ幅', 0, 200, st.width * 100, 1, '%', 100),
+    s_lcount: slider_new(pr, 'ループ回数', 0, 20, st.practice.loopCount, 1, '回', 0),
+    s_lstep: slider_new(pr, '1周ごと', -10, 10, st.practice.loopStep, 0.5, '%', 0),
+    s_ltarget: slider_new(pr, '目標テンポ', 25, 400, st.practice.loopTarget, 1, '%', 100),
+    s_clickvol: slider_new(pr, 'クリック音量', 0, 100, st.practice.clickVol * 100, 1, '%', 50),
+    sep: sep_view_new(refs.sep_area),
   }
+  da.appendChild(h('div', { class: 'btn-row' }, [b_dpp]))
+  el_active(b_dpp, st.delay.pp)
+  ui.s_lcount.root.title = '0 はずっとループ。回数に達するとループを抜けて先へ進みます'
+  ui.s_lstep.root.title = 'A-B/マーカーループが1周するたびにテンポを変える（だんだん速く/遅く）'
+  ui.s_ltarget.root.title = '1周ごとのテンポ変化がここで止まる'
 
-  for (const pr of EQ_PRESETS) {
-    refs.eq_preset_select.appendChild(h('option', { text: pr.name, attrs: { value: pr.name } }))
+  for (const p of EQ_PRESETS) {
+    refs.eq_preset_select.appendChild(h('option', { text: p.name, attrs: { value: p.name } }))
+  }
+  for (const r of REVERB_TYPES) {
+    refs.reverb_type_select.appendChild(h('option', { text: r.name, attrs: { value: r.id } }))
+  }
+  for (const sp of SPECIALS) {
+    refs.special_select.appendChild(h('option', { text: sp.name, attrs: { value: sp.id } }))
   }
   refs.mod_mode_select.value = st.mod.mode
+  refs.reverb_type_select.value = st.reverbType
+  refs.ch_mode_select.value = String(st.chMode)
+  refs.special_select.value = st.practice.special
   return ui
 }
 
-export function view_mod_mode(refs: refs_t, mode: string): void {
-  refs.mod_mode_select.value = mode
+export function view_fill_select(
+  sel: HTMLSelectElement,
+  head: string,
+  names: readonly string[],
+): void {
+  el_clear(sel)
+  sel.appendChild(h('option', { text: head, attrs: { value: '' } }))
+  for (const n of names) {
+    sel.appendChild(h('option', { text: n, attrs: { value: n } }))
+  }
+  sel.value = ''
 }
 
 export type wire_handlers_t = {
@@ -434,12 +715,23 @@ export type wire_handlers_t = {
   on_loop_cycle: () => void
   on_play_mode_cycle: () => void
   on_ab_clear: () => void
+  on_set_a: () => void
+  on_set_b: () => void
+  on_marker_add: () => void
+  on_marker_step: (dir: number) => void
   on_vocal: () => void
   on_reverse: () => void
   on_bc: () => void
   on_formant: () => void
   on_mod: () => void
   on_comp: () => void
+  on_delay: () => void
+  on_delay_pp: () => void
+  on_dist: () => void
+  on_click: () => void
+  on_sep_run: () => void
+  on_sep_export: () => void
+  on_sep_clear: () => void
   on_export: () => void
   on_settings: () => void
   on_theme: () => void
@@ -449,9 +741,180 @@ export type wire_handlers_t = {
   on_nav: (v: mobile_view_t) => void
   on_eq_preset: (name: string) => void
   on_mod_mode: (value: string) => void
+  on_reverb_type: (value: string) => void
+  on_delay_preset: (name: string) => void
+  on_ch_mode: (value: string) => void
+  on_special: (value: string) => void
+  on_preset: (value: string) => void
+  on_reset_all: () => void
   on_seek_delta: (sec: number) => void
   on_tempo_delta: (delta: number) => void
+  on_pitch_delta: (delta: number) => void
+  on_home: () => void
   on_viz_click: () => void
+  on_files: (files: File[]) => void
+}
+
+function card_collapsible(): void {
+  let saved: Record<string, boolean> = {}
+  try {
+    const raw = localStorage.getItem('wf-collapsed')
+    if (raw) {
+      const j: unknown = JSON.parse(raw)
+      if (typeof j === 'object' && j !== null) {
+        for (const k of Object.keys(j)) {
+          const v: unknown = Reflect.get(j, k)
+          if (typeof v === 'boolean') {
+            saved[k] = v
+          }
+        }
+      }
+    }
+  } catch {
+    saved = {}
+  }
+  const defaults: Record<string, boolean> = { dl: true, ds: true, st: true, pr: false }
+  for (const card of document.querySelectorAll<HTMLElement>('.card[data-card]')) {
+    const key = card.dataset['card'] ?? ''
+    const title = card.querySelector<HTMLElement>('.card-title')
+    if (!title) {
+      continue
+    }
+    title.prepend(svg_icon('chev', 10))
+    const collapsed = saved[key] ?? defaults[key] ?? false
+    card.classList.toggle('collapsed', collapsed)
+    title.title = 'クリックで開閉'
+    title.addEventListener('click', () => {
+      const now = !card.classList.contains('collapsed')
+      card.classList.toggle('collapsed', now)
+      saved[key] = now
+      try {
+        localStorage.setItem('wf-collapsed', JSON.stringify(saved))
+      } catch {}
+    })
+  }
+}
+
+function drop_wire(on_files: (files: File[]) => void): void {
+  let depth = 0
+  let ov: HTMLElement | null = null
+  const has_files = (e: DragEvent): boolean => {
+    const t = e.dataTransfer
+    return t !== null && Array.from(t.types).includes('Files')
+  }
+  const hide = (): void => {
+    depth = 0
+    if (ov) {
+      ov.remove()
+      ov = null
+    }
+  }
+  window.addEventListener('dragenter', (e) => {
+    if (!has_files(e)) {
+      return
+    }
+    e.preventDefault()
+    depth++
+    if (!ov) {
+      ov = h('div', { class: 'drop-overlay' }, [
+        h('div', { class: 'drop-box', text: 'ここにドロップして曲を追加' }),
+      ])
+      body_append(ov)
+    }
+  })
+  window.addEventListener('dragover', (e) => {
+    if (has_files(e)) {
+      e.preventDefault()
+    }
+  })
+  window.addEventListener('dragleave', (e) => {
+    if (!has_files(e)) {
+      return
+    }
+    depth--
+    if (depth <= 0) {
+      hide()
+    }
+  })
+  window.addEventListener('drop', (e) => {
+    if (!has_files(e)) {
+      return
+    }
+    e.preventDefault()
+    hide()
+    const t = e.dataTransfer
+    if (!t) {
+      return
+    }
+    void collect_drop(t).then((files) => {
+      if (files.length > 0) {
+        on_files(files)
+      }
+    })
+  })
+}
+
+function entry_files(entry: FileSystemEntry, out: File[], depth: number): Promise<void> {
+  if (entry instanceof FileSystemFileEntry || entry.isFile) {
+    return new Promise((resolve) => {
+      if (!(entry instanceof FileSystemFileEntry)) {
+        resolve()
+        return
+      }
+      entry.file(
+        (f) => {
+          out.push(f)
+          resolve()
+        },
+        () => resolve(),
+      )
+    })
+  }
+  if (depth > 6 || !(entry instanceof FileSystemDirectoryEntry)) {
+    return Promise.resolve()
+  }
+  const rd = entry.createReader()
+  return new Promise((resolve) => {
+    const all: FileSystemEntry[] = []
+    const step = (): void => {
+      rd.readEntries(
+        (list) => {
+          if (list.length === 0) {
+            void Promise.all(all.map((x) => entry_files(x, out, depth + 1))).then(() => resolve())
+            return
+          }
+          all.push(...list)
+          step()
+        },
+        () => resolve(),
+      )
+    }
+    step()
+  })
+}
+
+async function collect_drop(t: DataTransfer): Promise<File[]> {
+  const out: File[] = []
+  const entries: FileSystemEntry[] = []
+  for (const it of Array.from(t.items)) {
+    if (it.kind !== 'file') {
+      continue
+    }
+    const en = typeof it.webkitGetAsEntry === 'function' ? it.webkitGetAsEntry() : null
+    if (en) {
+      entries.push(en)
+    } else {
+      const f = it.getAsFile()
+      if (f) {
+        out.push(f)
+      }
+    }
+  }
+  for (const en of entries) {
+    await entry_files(en, out, 0)
+  }
+  out.sort((a, b) => a.name.localeCompare(b.name, 'ja', { numeric: true }))
+  return out
 }
 
 export function view_wire(refs: refs_t, ui: ui_t, hd: wire_handlers_t): void {
@@ -463,12 +926,23 @@ export function view_wire(refs: refs_t, ui: ui_t, hd: wire_handlers_t): void {
   refs.btn_loop_mode.addEventListener('click', hd.on_loop_cycle)
   refs.btn_play_mode.addEventListener('click', hd.on_play_mode_cycle)
   refs.btn_ab_clear.addEventListener('click', hd.on_ab_clear)
+  refs.btn_set_a.addEventListener('click', hd.on_set_a)
+  refs.btn_set_b.addEventListener('click', hd.on_set_b)
+  refs.btn_marker.addEventListener('click', hd.on_marker_add)
   refs.btn_vocal.addEventListener('click', hd.on_vocal)
   refs.btn_reverse.addEventListener('click', hd.on_reverse)
   refs.btn_bc_toggle.addEventListener('click', hd.on_bc)
   refs.btn_formant.addEventListener('click', hd.on_formant)
   refs.btn_mod_toggle.addEventListener('click', hd.on_mod)
   refs.btn_comp_toggle.addEventListener('click', hd.on_comp)
+  refs.btn_delay_toggle.addEventListener('click', hd.on_delay)
+  refs.btn_dist_toggle.addEventListener('click', hd.on_dist)
+  refs.btn_click.addEventListener('click', hd.on_click)
+  refs.btn_sep_run.addEventListener('click', hd.on_sep_run)
+  refs.btn_reset_all.addEventListener('click', hd.on_reset_all)
+  ui.b_dpp.addEventListener('click', hd.on_delay_pp)
+  ui.sep.b_export.addEventListener('click', hd.on_sep_export)
+  ui.sep.b_clear.addEventListener('click', hd.on_sep_clear)
   refs.btn_export.addEventListener('click', hd.on_export)
   refs.btn_settings.addEventListener('click', hd.on_settings)
   refs.btn_theme.addEventListener('click', hd.on_theme)
@@ -478,11 +952,28 @@ export function view_wire(refs: refs_t, ui: ui_t, hd: wire_handlers_t): void {
   refs.nav_player.addEventListener('click', () => hd.on_nav('player'))
   refs.nav_playlist.addEventListener('click', () => hd.on_nav('playlist'))
   refs.nav_fx.addEventListener('click', () => hd.on_nav('fx'))
-  refs.eq_preset_select.addEventListener('change', () =>
-    hd.on_eq_preset(refs.eq_preset_select.value),
-  )
+  refs.eq_preset_select.addEventListener('change', () => {
+    hd.on_eq_preset(refs.eq_preset_select.value)
+    refs.eq_preset_select.value = ''
+  })
   refs.mod_mode_select.addEventListener('change', () => hd.on_mod_mode(refs.mod_mode_select.value))
+  refs.reverb_type_select.addEventListener('change', () =>
+    hd.on_reverb_type(refs.reverb_type_select.value),
+  )
+  refs.delay_preset_select.addEventListener('change', () => {
+    hd.on_delay_preset(refs.delay_preset_select.value)
+    refs.delay_preset_select.value = ''
+  })
+  refs.ch_mode_select.addEventListener('change', () => hd.on_ch_mode(refs.ch_mode_select.value))
+  refs.special_select.addEventListener('change', () => hd.on_special(refs.special_select.value))
+  refs.preset_select.addEventListener('change', () => {
+    const v = refs.preset_select.value
+    refs.preset_select.value = ''
+    hd.on_preset(v)
+  })
   ui.vz.canvas.addEventListener('click', hd.on_viz_click)
+  card_collapsible()
+  drop_wire(hd.on_files)
 
   window.addEventListener('keydown', (e: KeyboardEvent) => {
     const t = e.target
@@ -493,27 +984,78 @@ export function view_wire(refs: refs_t, ui: ui_t, hd: wire_handlers_t): void {
     ) {
       return
     }
+    if (e.ctrlKey || e.metaKey || e.altKey) {
+      return
+    }
+    let used = true
     switch (e.code) {
       case 'Space':
-        e.preventDefault()
         hd.on_play_toggle()
         break
       case 'ArrowLeft':
-        e.preventDefault()
-        hd.on_seek_delta(-5)
+        hd.on_seek_delta(e.shiftKey ? -1 : -5)
         break
       case 'ArrowRight':
-        e.preventDefault()
-        hd.on_seek_delta(5)
+        hd.on_seek_delta(e.shiftKey ? 1 : 5)
+        break
+      case 'KeyJ':
+        hd.on_seek_delta(-10)
+        break
+      case 'KeyL':
+        hd.on_seek_delta(10)
         break
       case 'ArrowUp':
-        e.preventDefault()
-        hd.on_tempo_delta(5)
+        hd.on_tempo_delta(e.shiftKey ? 1 : 5)
         break
       case 'ArrowDown':
-        e.preventDefault()
-        hd.on_tempo_delta(-5)
+        hd.on_tempo_delta(e.shiftKey ? -1 : -5)
         break
+      case 'PageUp':
+      case 'Equal':
+      case 'NumpadAdd':
+        hd.on_pitch_delta(e.shiftKey ? 0.1 : 1)
+        break
+      case 'PageDown':
+      case 'Minus':
+      case 'NumpadSubtract':
+        hd.on_pitch_delta(e.shiftKey ? -0.1 : -1)
+        break
+      case 'BracketLeft':
+        hd.on_set_a()
+        break
+      case 'BracketRight':
+        hd.on_set_b()
+        break
+      case 'Backslash':
+      case 'IntlRo':
+        hd.on_ab_clear()
+        break
+      case 'KeyM':
+        hd.on_marker_add()
+        break
+      case 'Comma':
+        hd.on_marker_step(-1)
+        break
+      case 'Period':
+        hd.on_marker_step(1)
+        break
+      case 'Home':
+        hd.on_home()
+        break
+      case 'KeyN':
+        hd.on_next()
+        break
+      case 'KeyP':
+        hd.on_prev()
+        break
+      case 'KeyR':
+        hd.on_reverse()
+        break
+      default:
+        used = false
+    }
+    if (used) {
+      e.preventDefault()
     }
   })
 }
@@ -593,7 +1135,7 @@ export function view_playlist_render(
     scroll.appendChild(
       h('div', {
         class: 'pl-empty',
-        text: '曲がありません。「＋曲」または「開く」から読み込んでください。',
+        text: '曲がありません。「＋曲」「開く」、またはファイルやフォルダをドロップして読み込んでください。',
       }),
     )
     return
@@ -752,7 +1294,7 @@ export function view_playlist_render(
     row.li.classList.add('dragging')
     const grip = ev.currentTarget
     if (grip instanceof HTMLElement) {
-      grip.setPointerCapture(ev.pointerId)
+      ptr_capture(grip, ev.pointerId)
     }
     auto = requestAnimationFrame(auto_step)
   }
@@ -817,6 +1359,15 @@ export type settings_view_data_t = {
   formant_def: boolean
   bpm_auto: boolean
   viz_mode: viz_mode_t
+  export_fmt: export_fmt_t
+  fade_stop: number
+  sleep_min: number
+  resume: boolean
+  normalize: boolean
+  limiter: boolean
+  ai_backend: ai_backend_t
+  ai_hq: boolean
+  ai_info: string
 }
 
 export type settings_view_handlers_t = {
@@ -824,12 +1375,47 @@ export type settings_view_handlers_t = {
   on_formant_def: (on: boolean) => void
   on_bpm_auto: (on: boolean) => void
   on_viz_mode: (mode: viz_mode_t) => void
+  on_export_fmt: (fmt: export_fmt_t) => void
+  on_fade_stop: (sec: number) => void
+  on_sleep: (min: number) => void
+  on_resume: (on: boolean) => void
+  on_normalize: (on: boolean) => void
+  on_limiter: (on: boolean) => void
+  on_ai_backend: (b: ai_backend_t) => void
+  on_ai_hq: (on: boolean) => void
+  on_ai_file: () => void
+  on_ai_clear: () => void
 }
 
 export type settings_modal_t = {
   set_storage: (usage: number, quota: number) => void
   set_storage_unsupported: () => void
 }
+
+function sel_new(opts: readonly [string, string][], value: string): HTMLSelectElement {
+  const s = h(
+    'select',
+    undefined,
+    opts.map(([v, t]) => h('option', { text: t, attrs: { value: v } })),
+  )
+  s.value = value
+  return s
+}
+
+const SHORTCUTS: readonly [string, string][] = [
+  ['Space', '再生 / 一時停止'],
+  ['← →', '5秒戻る / 進む（Shift で1秒）'],
+  ['J L', '10秒戻る / 進む'],
+  ['↑ ↓', 'テンポ ±5%（Shift で±1%）'],
+  ['+ −', 'ピッチ ±1（Shift で±0.1）'],
+  ['[ ]', '現在位置を A / B に設定'],
+  ['\\', 'A-Bループ解除'],
+  ['M', 'マーカー追加'],
+  [', .', '前 / 次のマーカーへ'],
+  ['Home', '頭出し'],
+  ['N P', '次 / 前の曲'],
+  ['R', '逆再生の切り替え'],
+]
 
 export function view_settings_toggle(
   data: settings_view_data_t,
@@ -841,27 +1427,99 @@ export function view_settings_toggle(
     return null
   }
 
-  const sel_theme = h('select', undefined, [
-    h('option', { text: '自動（OS連動）', attrs: { value: 'auto' } }),
-    h('option', { text: 'ライト', attrs: { value: 'light' } }),
-    h('option', { text: 'ダーク', attrs: { value: 'dark' } }),
-  ])
+  const sel_theme = sel_new(
+    [
+      ['auto', '自動（OS連動）'],
+      ['light', 'ライト'],
+      ['dark', 'ダーク'],
+    ],
+    data.theme,
+  )
   const chk_fm = h('input', { attrs: { type: 'checkbox' } })
   const chk_bpm = h('input', { attrs: { type: 'checkbox' } })
-  const sel_viz = h('select', undefined, [
-    h('option', { text: 'バー', attrs: { value: 'bars' } }),
-    h('option', { text: '波形', attrs: { value: 'wave' } }),
-  ])
+  const chk_resume = h('input', { attrs: { type: 'checkbox' } })
+  const chk_hq = h('input', { attrs: { type: 'checkbox' } })
+  const chk_norm = h('input', { attrs: { type: 'checkbox' } })
+  const chk_lim = h('input', { attrs: { type: 'checkbox' } })
+  const sel_viz = sel_new(
+    [
+      ['bars', 'バー'],
+      ['wave', '波形'],
+    ],
+    data.viz_mode,
+  )
+  const sel_fmt = sel_new(
+    [
+      [String(EXPORT_16), '16bit（ディザあり）'],
+      [String(EXPORT_24), '24bit'],
+      [String(EXPORT_32F), '32bit float'],
+    ],
+    String(data.export_fmt),
+  )
+  const sel_fade = sel_new(
+    [
+      ['0', 'なし'],
+      ['1', '1秒'],
+      ['2', '2秒'],
+      ['3', '3秒'],
+      ['5', '5秒'],
+    ],
+    String(data.fade_stop),
+  )
+  const sel_sleep = sel_new(
+    [
+      ['0', 'なし'],
+      ['15', '15分後'],
+      ['30', '30分後'],
+      ['45', '45分後'],
+      ['60', '60分後'],
+      ['90', '90分後'],
+    ],
+    String(data.sleep_min),
+  )
+  const sel_ai = sel_new(
+    [
+      [AI_AUTO, '自動（WebGPU優先）'],
+      [AI_WEBGPU, 'WebGPU'],
+      [AI_WASM, 'CPU'],
+    ],
+    data.ai_backend,
+  )
+  const b_ai_file = h('button', { class: 'chip-btn', text: 'モデルファイルを選ぶ' })
+  const b_ai_clear = h('button', { class: 'chip-btn', text: 'モデルのキャッシュを削除' })
   const bar = h('div', { class: 'storage-bar' })
   const lbl = h('div', { class: 'storage-label', text: '計算中...' })
   const close = h('button', { class: 'modal-close', text: '閉じる' })
+  const kbd = h(
+    'div',
+    { class: 'kbd-list' },
+    SHORTCUTS.flatMap(([k, t]) => [h('kbd', { text: k }), h('span', { text: t })]),
+  )
 
   const box = h('div', { class: 'modal' }, [
     h('h3', { text: '設定' }),
     h('div', { class: 'set-row' }, [h('span', { text: 'テーマ' }), sel_theme]),
     h('label', { class: 'set-row' }, [h('span', { text: 'フォルマント補正を既定でON' }), chk_fm]),
-    h('label', { class: 'set-row' }, [h('span', { text: 'BPM自動検出' }), chk_bpm]),
+    h('label', { class: 'set-row' }, [h('span', { text: 'BPM・キーの自動検出' }), chk_bpm]),
     h('div', { class: 'set-row' }, [h('span', { text: 'ビジュアライザ' }), sel_viz]),
+    h('label', { class: 'set-row' }, [h('span', { text: '前回の再生位置から再開' }), chk_resume]),
+    h('h4', { text: '再生' }),
+    h('label', { class: 'set-row' }, [
+      h('span', { text: '音量をそろえる（ノーマライズ）' }),
+      chk_norm,
+    ]),
+    h('label', { class: 'set-row' }, [h('span', { text: '音割れ防止（リミッター）' }), chk_lim]),
+    h('div', { class: 'set-row' }, [h('span', { text: '停止時のフェードアウト' }), sel_fade]),
+    h('div', { class: 'set-row' }, [h('span', { text: 'スリープタイマー' }), sel_sleep]),
+    h('h4', { text: '書き出し' }),
+    h('div', { class: 'set-row' }, [h('span', { text: 'WAVの形式' }), sel_fmt]),
+    h('h4', { text: 'AI音源分離' }),
+    h('div', { class: 'set-row' }, [h('span', { text: '計算に使う装置' }), sel_ai]),
+    h('label', { class: 'set-row' }, [h('span', { text: '高品質（時間は約1.5倍）' }), chk_hq]),
+    h('div', { class: 'storage-label', text: data.ai_info }),
+    h('div', { class: 'set-btns' }, [b_ai_file, b_ai_clear]),
+    h('h4', { text: 'キーボード操作' }),
+    kbd,
     h('div', { class: 'set-storage' }, [
       h('span', { text: 'ストレージ使用量' }),
       h('div', { class: 'storage-track' }, [bar]),
@@ -872,10 +1530,12 @@ export function view_settings_toggle(
   const ov = h('div', { id: 'settings-overlay', class: 'modal-overlay' }, [box])
   body_append(ov)
 
-  sel_theme.value = data.theme
   chk_fm.checked = data.formant_def
   chk_bpm.checked = data.bpm_auto
-  sel_viz.value = data.viz_mode
+  chk_resume.checked = data.resume
+  chk_hq.checked = data.ai_hq
+  chk_norm.checked = data.normalize
+  chk_lim.checked = data.limiter
 
   ov.addEventListener('click', (e) => {
     if (e.target === ov) {
@@ -889,9 +1549,25 @@ export function view_settings_toggle(
   })
   chk_fm.addEventListener('change', () => hd.on_formant_def(chk_fm.checked))
   chk_bpm.addEventListener('change', () => hd.on_bpm_auto(chk_bpm.checked))
+  chk_resume.addEventListener('change', () => hd.on_resume(chk_resume.checked))
+  chk_hq.addEventListener('change', () => hd.on_ai_hq(chk_hq.checked))
+  chk_norm.addEventListener('change', () => hd.on_normalize(chk_norm.checked))
+  chk_lim.addEventListener('change', () => hd.on_limiter(chk_lim.checked))
   sel_viz.addEventListener('change', () =>
     hd.on_viz_mode(sel_viz.value === 'wave' ? VIZ_WAVE : VIZ_BARS),
   )
+  sel_fmt.addEventListener('change', () => {
+    const v = sel_fmt.value
+    hd.on_export_fmt(v === '24' ? EXPORT_24 : v === '32' ? EXPORT_32F : EXPORT_16)
+  })
+  sel_fade.addEventListener('change', () => hd.on_fade_stop(Number(sel_fade.value) || 0))
+  sel_sleep.addEventListener('change', () => hd.on_sleep(Number(sel_sleep.value) || 0))
+  sel_ai.addEventListener('change', () => {
+    const v = sel_ai.value
+    hd.on_ai_backend(v === AI_WEBGPU ? AI_WEBGPU : v === AI_WASM ? AI_WASM : AI_AUTO)
+  })
+  b_ai_file.addEventListener('click', hd.on_ai_file)
+  b_ai_clear.addEventListener('click', hd.on_ai_clear)
 
   return {
     set_storage: (usage: number, quota: number): void => {
