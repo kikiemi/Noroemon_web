@@ -15,33 +15,26 @@ declare function registerProcessor(
 ): void
 
 const TWO_PI = Math.PI * 2
-const FFT_N = 2048
-const HALF_N = 1024
-const PACK_M = 1024
+const N_HI = 2048
+const N_LO = 4096
 const SYN_HOP = 512
 const OFS = 1536
+const LO_PRE = (N_LO - N_HI) >> 1
+const START = OFS + LO_PRE
 const OLA_NORM = 1.5
 const RING = 1 << 15
 const RING_M = RING - 1
 const MAX_GRAINS = 64
 const REPORT_EVERY = 2048
-const AA_ROLL = 24
 const RS_TAPS = 64
 const RS_HALF = 32
 const RS_PH = 512
 const BFP_SHIFT = 10
 const FADE_N = 96
-const HEAP_CAP = (HALF_N + 1) * 2
 const TE_ITER = 6
+const XO_LO = 2000
+const XO_HI = 3000
 
-const HANN = new Float32Array(FFT_N)
-const HANN_A = new Float32Array(FFT_N)
-const HANN_S = new Float32Array(FFT_N)
-const BIT_REV = new Uint16Array(PACK_M)
-const TW_RE = new Float64Array(PACK_M >> 1)
-const TW_IM = new Float64Array(PACK_M >> 1)
-const UF_RE = new Float64Array(PACK_M)
-const UF_IM = new Float64Array(PACK_M)
 const RS_TAB = new Float32Array((RS_PH + 1) * RS_TAPS)
 
 function bessel_i0(x: number): number {
@@ -58,32 +51,7 @@ function bessel_i0(x: number): number {
   return sum
 }
 
-function tables_build(): void {
-  for (let i = 0; i < FFT_N; i++) {
-    const w = 0.5 * (1 - Math.cos((TWO_PI * i) / FFT_N))
-    HANN[i] = w
-    HANN_A[i] = (w * w) / OLA_NORM
-    HANN_S[i] = w / OLA_NORM
-  }
-  for (let i = 0; i < PACK_M; i++) {
-    let r = 0
-    let x = i
-    for (let k = 0; k < 10; k++) {
-      r = (r << 1) | (x & 1)
-      x >>= 1
-    }
-    BIT_REV[i] = r
-  }
-  for (let k = 0; k < PACK_M >> 1; k++) {
-    const a = (-TWO_PI * k) / PACK_M
-    TW_RE[k] = Math.cos(a)
-    TW_IM[k] = Math.sin(a)
-  }
-  for (let k = 0; k < PACK_M; k++) {
-    const a = (-TWO_PI * k) / FFT_N
-    UF_RE[k] = Math.cos(a)
-    UF_IM[k] = Math.sin(a)
-  }
+function rs_build(): void {
   const beta = 8.0
   const fc = 0.915
   const i0b = bessel_i0(beta)
@@ -108,11 +76,78 @@ function tables_build(): void {
     }
   }
 }
-tables_build()
+rs_build()
 
-function fft_m(re: Float64Array, im: Float64Array): void {
-  for (let i = 0; i < PACK_M; i++) {
-    const j = BIT_REV[i]
+type fftp_t = {
+  n: number
+  half: number
+  m: number
+  rev: Uint16Array
+  tw_re: Float64Array
+  tw_im: Float64Array
+  uf_re: Float64Array
+  uf_im: Float64Array
+  w_re: Float64Array
+  w_im: Float64Array
+  hann: Float64Array
+  hann_s: Float64Array
+  hann_a: Float64Array
+}
+
+function fftp_new(n: number): fftp_t {
+  const m = n >> 1
+  let bits = 0
+  while (1 << bits < m) {
+    bits++
+  }
+  const p: fftp_t = {
+    n,
+    half: m,
+    m,
+    rev: new Uint16Array(m),
+    tw_re: new Float64Array(m >> 1),
+    tw_im: new Float64Array(m >> 1),
+    uf_re: new Float64Array(m),
+    uf_im: new Float64Array(m),
+    w_re: new Float64Array(m),
+    w_im: new Float64Array(m),
+    hann: new Float64Array(n),
+    hann_s: new Float64Array(n),
+    hann_a: new Float64Array(n),
+  }
+  for (let i = 0; i < m; i++) {
+    let r = 0
+    let x = i
+    for (let k = 0; k < bits; k++) {
+      r = (r << 1) | (x & 1)
+      x >>= 1
+    }
+    p.rev[i] = r
+  }
+  for (let k = 0; k < m >> 1; k++) {
+    const a = (-TWO_PI * k) / m
+    p.tw_re[k] = Math.cos(a)
+    p.tw_im[k] = Math.sin(a)
+  }
+  for (let k = 0; k < m; k++) {
+    const a = (-TWO_PI * k) / n
+    p.uf_re[k] = Math.cos(a)
+    p.uf_im[k] = Math.sin(a)
+  }
+  for (let i = 0; i < n; i++) {
+    const w = 0.5 * (1 - Math.cos((TWO_PI * i) / n))
+    p.hann[i] = w
+    p.hann_s[i] = w / OLA_NORM
+    p.hann_a[i] = (w * w) / OLA_NORM
+  }
+  return p
+}
+
+function fft_m(p: fftp_t, re: Float64Array, im: Float64Array): void {
+  const m = p.m
+  const rev = p.rev
+  for (let i = 0; i < m; i++) {
+    const j = rev[i]
     if (j > i) {
       let t = re[i]
       re[i] = re[j]
@@ -122,13 +157,15 @@ function fft_m(re: Float64Array, im: Float64Array): void {
       im[j] = t
     }
   }
-  for (let s = 1; s < PACK_M; s <<= 1) {
-    const stride = (PACK_M >> 1) / s
-    for (let k = 0; k < PACK_M; k += s << 1) {
+  const twr = p.tw_re
+  const twi = p.tw_im
+  for (let s = 1; s < m; s <<= 1) {
+    const stride = (m >> 1) / s
+    for (let k = 0; k < m; k += s << 1) {
       for (let j = 0; j < s; j++) {
         const tw = j * stride
-        const wr = TW_RE[tw]
-        const wi = TW_IM[tw]
+        const wr = twr[tw]
+        const wi = twi[tw]
         const u = k + j
         const v = u + s
         const tr = wr * re[v] - wi * im[v]
@@ -142,58 +179,44 @@ function fft_m(re: Float64Array, im: Float64Array): void {
   }
 }
 
-function ifft_m(re: Float64Array, im: Float64Array): void {
-  for (let i = 0; i < PACK_M; i++) {
-    im[i] = -im[i]
-  }
-  fft_m(re, im)
-  const inv = 1.0 / PACK_M
-  for (let i = 0; i < PACK_M; i++) {
-    re[i] *= inv
-    im[i] = -im[i] * inv
-  }
-}
-
-function rfft_fwd(
-  x: Float64Array,
-  wr: Float64Array,
-  wi: Float64Array,
-  spr: Float64Array,
-  spi: Float64Array,
-): void {
-  for (let k = 0; k < PACK_M; k++) {
+function rfft_fwd(p: fftp_t, x: Float64Array, spr: Float64Array, spi: Float64Array): void {
+  const m = p.m
+  const wr = p.w_re
+  const wi = p.w_im
+  for (let k = 0; k < m; k++) {
     wr[k] = x[2 * k]
     wi[k] = x[2 * k + 1]
   }
-  fft_m(wr, wi)
+  fft_m(p, wr, wi)
   spr[0] = wr[0] + wi[0]
   spi[0] = 0
-  spr[HALF_N] = wr[0] - wi[0]
-  spi[HALF_N] = 0
-  for (let k = 1; k < PACK_M; k++) {
+  spr[m] = wr[0] - wi[0]
+  spi[m] = 0
+  const ufr = p.uf_re
+  const ufi = p.uf_im
+  for (let k = 1; k < m; k++) {
     const ar = wr[k]
     const ai = wi[k]
-    const br = wr[PACK_M - k]
-    const bi = -wi[PACK_M - k]
+    const br = wr[m - k]
+    const bi = -wi[m - k]
     const fer = (ar + br) * 0.5
     const fei = (ai + bi) * 0.5
     const fo_r = (ar - br) * 0.5
     const fo_i = (ai - bi) * 0.5
-    const tr = UF_RE[k] * fo_r - UF_IM[k] * fo_i
-    const ti = UF_RE[k] * fo_i + UF_IM[k] * fo_r
+    const tr = ufr[k] * fo_r - ufi[k] * fo_i
+    const ti = ufr[k] * fo_i + ufi[k] * fo_r
     spr[k] = fer + ti
     spi[k] = fei - tr
   }
 }
 
-function rfft_inv(
-  spr: Float64Array,
-  spi: Float64Array,
-  wr: Float64Array,
-  wi: Float64Array,
-  x: Float64Array,
-): void {
-  for (let k = 0; k < PACK_M; k++) {
+function rfft_inv(p: fftp_t, spr: Float64Array, spi: Float64Array, x: Float64Array): void {
+  const m = p.m
+  const wr = p.w_re
+  const wi = p.w_im
+  const ufr = p.uf_re
+  const ufi = p.uf_im
+  for (let k = 0; k < m; k++) {
     let ar: number
     let ai: number
     let br: number
@@ -201,29 +224,30 @@ function rfft_inv(
     if (k === 0) {
       ar = spr[0]
       ai = 0
-      br = spr[HALF_N]
+      br = spr[m]
       bi = 0
     } else {
       ar = spr[k]
       ai = spi[k]
-      br = spr[PACK_M - k]
-      bi = -spi[PACK_M - k]
+      br = spr[m - k]
+      bi = -spi[m - k]
     }
     const fer = (ar + br) * 0.5
     const fei = (ai + bi) * 0.5
     const fo_r = (ar - br) * 0.5
     const fo_i = (ai - bi) * 0.5
-    const wcr = UF_RE[k]
-    const wci = -UF_IM[k]
+    const wcr = ufr[k]
+    const wci = -ufi[k]
     const tr = wcr * fo_r - wci * fo_i
     const ti = wcr * fo_i + wci * fo_r
     wr[k] = fer - ti
-    wi[k] = fei + tr
+    wi[k] = -(fei + tr)
   }
-  ifft_m(wr, wi)
-  for (let k = 0; k < PACK_M; k++) {
-    x[2 * k] = wr[k]
-    x[2 * k + 1] = wi[k]
+  fft_m(p, wr, wi)
+  const inv = 1 / m
+  for (let k = 0; k < m; k++) {
+    x[2 * k] = wr[k] * inv
+    x[2 * k + 1] = -wi[k] * inv
   }
 }
 
@@ -284,26 +308,93 @@ function i16_list(v: unknown): Int16Array[] | null {
 type chan_t = {
   ph_a: Float64Array
   ph_s: Float64Array
-  om: Float64Array
   mag_p: Float64Array
   mag: Float64Array
   ap: Float64Array
   dc: number
   nyq: number
-  fresh: boolean
 }
 
-function chan_new(): chan_t {
+function chan_new(half: number): chan_t {
   return {
-    ph_a: new Float64Array(HALF_N + 1),
-    ph_s: new Float64Array(HALF_N + 1),
-    om: new Float64Array(HALF_N + 1),
-    mag_p: new Float64Array(HALF_N + 1),
-    mag: new Float64Array(HALF_N + 1),
-    ap: new Float64Array(HALF_N + 1),
+    ph_a: new Float64Array(half + 1),
+    ph_s: new Float64Array(half + 1),
+    mag_p: new Float64Array(half + 1),
+    mag: new Float64Array(half + 1),
+    ap: new Float64Array(half + 1),
     dc: 0,
     nyq: 0,
-    fresh: true,
+  }
+}
+
+type pvx_t = {
+  p: fftp_t
+  n: number
+  half: number
+  kmax: number
+  hop_s: number
+  chans: chan_t[]
+  win: Float64Array
+  ob: Float64Array
+  spr: Float64Array
+  spi: Float64Array
+  cep: Float64Array
+  env: Float64Array
+  corr: Float64Array
+  aa: Float64Array
+  band: Float64Array
+  peaks: Int32Array
+  owner: Int32Array
+  last_base: number
+  reset: boolean
+  e_prev: number
+  tr_hold: number
+}
+
+function band_lo(f: number): number {
+  if (f <= XO_LO) {
+    return 1
+  }
+  if (f >= XO_HI) {
+    return 0
+  }
+  return 0.5 + 0.5 * Math.cos((Math.PI * (f - XO_LO)) / (XO_HI - XO_LO))
+}
+
+function pvx_new(n: number, sr: number, low: boolean): pvx_t {
+  const p = fftp_new(n)
+  const half = p.half
+  const band = new Float64Array(half + 1)
+  for (let k = 0; k <= half; k++) {
+    const b = band_lo((k * sr) / n)
+    band[k] = low ? b : 1 - b
+  }
+  let kmax = half
+  if (low) {
+    kmax = Math.min(half, Math.ceil((XO_HI * n) / sr) + 4)
+  }
+  return {
+    p,
+    n,
+    half,
+    kmax,
+    hop_s: low ? SYN_HOP * 2 : SYN_HOP,
+    chans: [chan_new(half), chan_new(half)],
+    win: new Float64Array(n),
+    ob: new Float64Array(n),
+    spr: new Float64Array(half + 1),
+    spi: new Float64Array(half + 1),
+    cep: new Float64Array(n),
+    env: new Float64Array(half + 1),
+    corr: new Float64Array(half + 1).fill(1),
+    aa: new Float64Array(half + 1).fill(1),
+    band,
+    peaks: new Int32Array(half + 1),
+    owner: new Int32Array(half + 1),
+    last_base: 0,
+    reset: true,
+    e_prev: 0,
+    tr_hold: 0,
   }
 }
 
@@ -341,31 +432,20 @@ type pv_t = {
   reset: boolean
   fast_prev: boolean
   jump: boolean
-  e_prev: number
+  g_n: number
+  lo_tr: boolean
 
   ring: Float32Array[]
   s_pos: number
   r_pos: number
   z_pos: number
 
-  mid: Float64Array
-  side: Float64Array
-  win: Float64Array
-  ob: Float64Array
-  w_re: Float64Array
-  w_im: Float64Array
-  sp_re: Float64Array
-  sp_im: Float64Array
-  cep: Float64Array
-  env: Float64Array
-  corr: Float64Array
-  aa: Float64Array
-  om_tmp: Float64Array
-  chans: chan_t[]
-  done: Uint8Array
-  heap_v: Float64Array
-  heap_i: Int32Array
-  heap_n: number
+  hi: pvx_t
+  lo: pvx_t
+  b0: Float64Array
+  b1: Float64Array
+  h0: Float64Array
+  h1: Float64Array
   rs_c: Float32Array
 
   w_kind: number
@@ -394,6 +474,8 @@ type pv_t = {
 }
 
 function pv_new(sr: number): pv_t {
+  const b0 = new Float64Array(N_LO)
+  const b1 = new Float64Array(N_LO)
   return {
     sr,
     len: 0,
@@ -415,39 +497,28 @@ function pv_new(sr: number): pv_t {
     rate: 1,
     formant: false,
     dir: 1,
-    in_pos: -OFS,
+    in_pos: -START,
     hop_acc: 0,
     last_hop: SYN_HOP,
-    last_base: -OFS,
+    last_base: -START,
     last_sp: 0,
     loop_s: -1,
     loop_e: -1,
     reset: true,
     fast_prev: true,
     jump: false,
-    e_prev: 0,
+    g_n: 0,
+    lo_tr: false,
     ring: [new Float32Array(RING), new Float32Array(RING)],
     s_pos: 0,
-    r_pos: OFS,
-    z_pos: 0,
-    mid: new Float64Array(FFT_N),
-    side: new Float64Array(FFT_N),
-    win: new Float64Array(FFT_N),
-    ob: new Float64Array(FFT_N),
-    w_re: new Float64Array(PACK_M),
-    w_im: new Float64Array(PACK_M),
-    sp_re: new Float64Array(HALF_N + 1),
-    sp_im: new Float64Array(HALF_N + 1),
-    cep: new Float64Array(FFT_N),
-    env: new Float64Array(HALF_N + 1),
-    corr: new Float64Array(HALF_N + 1),
-    aa: new Float64Array(HALF_N + 1),
-    om_tmp: new Float64Array(HALF_N + 1),
-    chans: [chan_new(), chan_new()],
-    done: new Uint8Array(HALF_N + 1),
-    heap_v: new Float64Array(HEAP_CAP),
-    heap_i: new Int32Array(HEAP_CAP),
-    heap_n: 0,
+    r_pos: START,
+    z_pos: -N_LO,
+    hi: pvx_new(N_HI, sr, false),
+    lo: pvx_new(N_LO, sr, true),
+    b0,
+    b1,
+    h0: b0.subarray(LO_PRE, LO_PRE + N_HI),
+    h1: b1.subarray(LO_PRE, LO_PRE + N_HI),
     rs_c: new Float32Array(RS_TAPS),
     w_kind: 0,
     w_x: 0,
@@ -477,8 +548,8 @@ function pv_flush(st: pv_t): void {
   st.ring[0].fill(0)
   st.ring[1].fill(0)
   st.s_pos = 0
-  st.r_pos = OFS
-  st.z_pos = 0
+  st.r_pos = START
+  st.z_pos = -N_LO
   st.hop_acc = 0
   st.draining = false
   st.ended_sent = false
@@ -487,6 +558,10 @@ function pv_flush(st: pv_t): void {
   st.last_base = st.in_pos
   st.last_sp = 0
   st.last_hop = SYN_HOP
+  st.g_n = 0
+  st.lo_tr = false
+  st.lo.reset = true
+  st.hi.reset = true
   st.bt_head = 0
   st.bt_tail = 0
   st.ck_n = 0
@@ -494,7 +569,7 @@ function pv_flush(st: pv_t): void {
 
 function pv_audible(st: pv_t): number {
   const ratio = st.last_hop / SYN_HOP
-  return st.last_base + st.dir * ((st.r_pos - st.last_sp) * ratio + HALF_N * (1 - ratio))
+  return st.last_base + st.dir * ((st.r_pos - st.last_sp) * ratio + (N_HI >> 1) * (1 - ratio))
 }
 
 function pv_clamp_pos(st: pv_t, p: number): number {
@@ -503,7 +578,7 @@ function pv_clamp_pos(st: pv_t, p: number): number {
 }
 
 function pv_seek_to(st: pv_t, pos: number): void {
-  st.in_pos = pv_clamp_pos(st, pos) - st.dir * OFS
+  st.in_pos = pv_clamp_pos(st, pos) - st.dir * START
   pv_flush(st)
 }
 
@@ -529,15 +604,16 @@ function src_n_ch(st: pv_t): number {
 function src_fill(st: pv_t, c: number, base: number, out: Float64Array): void {
   const len = st.len
   const dir = st.dir
+  const n = out.length
   if (!st.use_st) {
     const x = st.ch[c < st.n_ch ? c : 0]
-    if (dir > 0 && base >= 0 && base + FFT_N <= len) {
-      for (let i = 0; i < FFT_N; i++) {
+    if (dir > 0 && base >= 0 && base + n <= len) {
+      for (let i = 0; i < n; i++) {
         out[i] = x[base + i]
       }
       return
     }
-    for (let i = 0; i < FFT_N; i++) {
+    for (let i = 0; i < n; i++) {
       const p = base + i * dir
       out[i] = p >= 0 && p < len ? x[p] : 0
     }
@@ -551,7 +627,7 @@ function src_fill(st: pv_t, c: number, base: number, out: Float64Array): void {
     }
     const d = st.st[s * 2 + c]
     const sc = st.sc[s * 2 + c]
-    for (let i = 0; i < FFT_N; i++) {
+    for (let i = 0; i < n; i++) {
       const p = base + i * dir
       if (p >= 0 && p < len) {
         out[i] += d[p] * sc[p >> BFP_SHIFT] * g
@@ -560,203 +636,146 @@ function src_fill(st: pv_t, c: number, base: number, out: Float64Array): void {
   }
 }
 
-function src_fill_ms(st: pv_t, base: number): void {
-  const m = st.mid
-  const s = st.side
-  src_fill(st, 0, base, m)
-  if (src_n_ch(st) < 2) {
-    return
-  }
-  src_fill(st, 1, base, s)
-  for (let i = 0; i < FFT_N; i++) {
-    const l = m[i]
-    const r = s[i]
-    m[i] = (l + r) * 0.5
-    s[i] = (l - r) * 0.5
+function src_fill_lr(st: pv_t, base: number): void {
+  src_fill(st, 0, base, st.b0)
+  if (src_n_ch(st) > 1) {
+    src_fill(st, 1, base, st.b1)
   }
 }
 
-function heap_push(st: pv_t, v: number, idx: number): void {
-  const hv = st.heap_v
-  const hi = st.heap_i
-  let i = st.heap_n++
-  while (i > 0) {
-    const p = (i - 1) >> 1
-    if (hv[p] >= v) {
-      break
-    }
-    hv[i] = hv[p]
-    hi[i] = hi[p]
-    i = p
+function pv_analyze(x: pvx_t, ch: chan_t, src: Float64Array): void {
+  const p = x.p
+  const w = x.win
+  const n = x.n
+  const hann = p.hann
+  for (let i = 0; i < n; i++) {
+    w[i] = src[i] * hann[i]
   }
-  hv[i] = v
-  hi[i] = idx
-}
-
-function heap_pop(st: pv_t): number {
-  const hv = st.heap_v
-  const hi = st.heap_i
-  const top = hi[0]
-  const n = --st.heap_n
-  if (n === 0) {
-    return top
-  }
-  const v = hv[n]
-  const x = hi[n]
-  let i = 0
-  for (;;) {
-    let c = 2 * i + 1
-    if (c >= n) {
-      break
-    }
-    if (c + 1 < n && hv[c + 1] > hv[c]) {
-      c++
-    }
-    if (hv[c] <= v) {
-      break
-    }
-    hv[i] = hv[c]
-    hi[i] = hi[c]
-    i = c
-  }
-  hv[i] = v
-  hi[i] = x
-  return top
-}
-
-function pv_analyze(st: pv_t, ch: chan_t, x: Float64Array): void {
-  const w = st.win
-  for (let i = 0; i < FFT_N; i++) {
-    w[i] = x[i] * HANN[i]
-  }
-  const spr = st.sp_re
-  const spi = st.sp_im
-  rfft_fwd(w, st.w_re, st.w_im, spr, spi)
+  const spr = x.spr
+  const spi = x.spi
+  rfft_fwd(p, w, spr, spi)
   ch.dc = spr[0]
-  ch.nyq = spr[HALF_N]
+  ch.nyq = spr[x.half]
   const mag = ch.mag
   const ap = ch.ap
-  for (let k = 1; k < HALF_N; k++) {
+  const kmax = x.kmax
+  for (let k = 1; k < kmax; k++) {
     const re = spr[k]
     const im = spi[k]
     mag[k] = Math.sqrt(re * re + im * im)
     ap[k] = Math.atan2(im, re)
   }
   mag[0] = Math.abs(ch.dc)
-  mag[HALF_N] = Math.abs(ch.nyq)
+  mag[x.half] = Math.abs(ch.nyq)
 }
 
-function pv_phase(st: pv_t, ch: chan_t, hop_a: number, reset_all: boolean, reset_k0: number): void {
+function pv_phase(
+  x: pvx_t,
+  ch: chan_t,
+  hop_in: number,
+  reset_all: boolean,
+  reset_k0: number,
+): void {
   const mag = ch.mag
   const ap = ch.ap
   const ph_a = ch.ph_a
   const ph_s = ch.ph_s
-  const om = ch.om
-  const mag_p = ch.mag_p
-  const om_new = st.om_tmp
-  const done = st.done
-  const step = TWO_PI / FFT_N
-
-  let mx = 0
-  for (let k = 1; k < HALF_N; k++) {
-    const w = k * step
-    om_new[k] = w + princ(ap[k] - ph_a[k] - hop_a * w) / hop_a
-    if (mag[k] > mx) {
-      mx = mag[k]
-    }
-    if (mag_p[k] > mx) {
-      mx = mag_p[k]
-    }
-  }
-
+  const kmax = x.kmax
   if (reset_all) {
-    for (let k = 1; k < HALF_N; k++) {
+    for (let k = 1; k < kmax; k++) {
       ph_s[k] = ap[k]
     }
   } else {
-    const tol = mx * 1e-5
-    const fresh = ch.fresh
-    let remain = 0
-    st.heap_n = 0
-    for (let k = 1; k < HALF_N; k++) {
-      if (mag[k] <= tol) {
-        done[k] = 1
-        ph_s[k] = princ(ph_s[k] + SYN_HOP * om_new[k])
-      } else if (k >= reset_k0) {
-        done[k] = 1
-        ph_s[k] = ap[k]
-        heap_push(st, mag[k], k | 4096)
-      } else {
-        done[k] = 0
-        remain++
-      }
-      if (mag_p[k] > tol) {
-        heap_push(st, mag_p[k], k)
+    const step = TWO_PI / x.n
+    const scale = x.hop_s / hop_in
+    let mx = 0
+    for (let k = 1; k < kmax; k++) {
+      const w = hop_in * k * step
+      const dp = princ(ap[k] - ph_a[k] - w)
+      ph_s[k] = princ(ph_s[k] + (w + dp) * scale)
+      if (mag[k] > mx) {
+        mx = mag[k]
       }
     }
-    while (remain > 0) {
-      if (st.heap_n === 0) {
-        let best = -1
-        let bv = -1
-        for (let k = 1; k < HALF_N; k++) {
-          if (done[k] === 0 && mag[k] > bv) {
-            bv = mag[k]
-            best = k
+    const floor = mx * 1e-6
+    const peaks = x.peaks
+    const owner = x.owner
+    let np = 0
+    for (let k = 2; k < kmax - 1; k++) {
+      const m = mag[k]
+      if (m > floor && m > mag[k - 1] && m >= mag[k + 1]) {
+        peaks[np++] = k
+      }
+    }
+    if (np > 0) {
+      const first = peaks[0]
+      const last = peaks[np - 1]
+      for (let k = 1; k <= first; k++) {
+        owner[k] = first
+      }
+      for (let i = 0; i + 1 < np; i++) {
+        const a = peaks[i]
+        const b = peaks[i + 1]
+        let v = a + 1
+        for (let j = a + 2; j < b; j++) {
+          if (mag[j] < mag[v]) {
+            v = j
           }
         }
-        if (best < 0) {
-          break
+        for (let j = a; j < v; j++) {
+          owner[j] = a
         }
-        done[best] = 1
-        remain--
-        ph_s[best] = ap[best]
-        heap_push(st, mag[best], best | 4096)
-        continue
-      }
-      const e = heap_pop(st)
-      const k = e & 2047
-      if ((e & 4096) === 0) {
-        if (done[k] === 0) {
-          done[k] = 1
-          remain--
-          const w = fresh ? om_new[k] : 0.5 * (om[k] + om_new[k])
-          ph_s[k] = princ(ph_s[k] + SYN_HOP * w)
-          heap_push(st, mag[k], k | 4096)
+        for (let j = v; j <= b; j++) {
+          owner[j] = b
         }
-        continue
       }
-      if (k > 1 && done[k - 1] === 0) {
-        done[k - 1] = 1
-        remain--
-        ph_s[k - 1] = princ(ph_s[k] + (ap[k - 1] - ap[k]))
-        heap_push(st, mag[k - 1], (k - 1) | 4096)
+      for (let k = last; k < kmax; k++) {
+        owner[k] = last
       }
-      if (k < HALF_N - 1 && done[k + 1] === 0) {
-        done[k + 1] = 1
-        remain--
-        ph_s[k + 1] = princ(ph_s[k] + (ap[k + 1] - ap[k]))
-        heap_push(st, mag[k + 1], (k + 1) | 4096)
+      for (let k = 1; k < kmax; k++) {
+        const o = owner[k]
+        if (o !== k) {
+          ph_s[k] = princ(ph_s[o] + (ap[k] - ap[o]))
+        }
       }
     }
+    for (let k = reset_k0; k < kmax; k++) {
+      ph_s[k] = ap[k]
+    }
   }
-  for (let k = 1; k < HALF_N; k++) {
+  const mag_p = ch.mag_p
+  for (let k = 1; k < kmax; k++) {
     ph_a[k] = ap[k]
-    om[k] = om_new[k]
     mag_p[k] = mag[k]
   }
-  ch.fresh = reset_all
 }
 
-function pv_envelope(st: pv_t, n_ch: number, pr: number): void {
-  const spr = st.sp_re
-  const spi = st.sp_im
-  const c0 = st.chans[0]
-  const c1 = st.chans[1]
-  const tgt_a = st.corr
-  const env = st.env
-  const cep = st.cep
+function pv_stereo_lock(x: pvx_t): void {
+  const l = x.chans[0]
+  const r = x.chans[1]
+  const kmax = x.kmax
+  for (let k = 1; k < kmax; k++) {
+    if (l.mag[k] >= r.mag[k]) {
+      r.ph_s[k] = princ(l.ph_s[k] + (r.ap[k] - l.ap[k]))
+    } else {
+      l.ph_s[k] = princ(r.ph_s[k] + (l.ap[k] - r.ap[k]))
+    }
+  }
+}
+
+function pv_envelope(x: pvx_t, n_ch: number, pr: number, sr: number): void {
+  const p = x.p
+  const half = x.half
+  const n = x.n
+  const spr = x.spr
+  const spi = x.spi
+  const c0 = x.chans[0]
+  const c1 = x.chans[1]
+  const tgt_a = x.corr
+  const env = x.env
+  const cep = x.cep
   let mx = 0
-  for (let k = 0; k <= HALF_N; k++) {
+  for (let k = 0; k <= half; k++) {
     let m = c0.mag[k]
     if (n_ch > 1) {
       m += c1.mag[k]
@@ -767,19 +786,19 @@ function pv_envelope(st: pv_t, n_ch: number, pr: number): void {
     tgt_a[k] = m
   }
   const floor = mx * 1e-5 + 1e-12
-  for (let k = 0; k <= HALF_N; k++) {
+  for (let k = 0; k <= half; k++) {
     tgt_a[k] = Math.log(tgt_a[k] + floor)
   }
-  let lq = Math.round(st.sr / 600)
+  let lq = Math.round(sr / 600)
   for (let it = 0; it < TE_ITER; it++) {
-    for (let k = 0; k <= HALF_N; k++) {
+    for (let k = 0; k <= half; k++) {
       spr[k] = tgt_a[k]
       spi[k] = 0
     }
-    rfft_inv(spr, spi, st.w_re, st.w_im, cep)
+    rfft_inv(p, spr, spi, cep)
     if (it === 0) {
-      const q0 = Math.round(st.sr / 1000)
-      const q1 = Math.min(HALF_N - 1, Math.round(st.sr / 70))
+      const q0 = Math.round(sr / 1000)
+      const q1 = Math.min(half - 1, Math.round(sr / 70))
       let pk = 0
       let pq = 0
       let sum = 0
@@ -794,33 +813,33 @@ function pv_envelope(st: pv_t, n_ch: number, pr: number): void {
       if (pq > 0 && pk > (6 * sum) / (q1 - q0 + 1)) {
         lq = Math.round(pq * 0.5)
       }
-      const lo = Math.round(st.sr / 1400)
-      const hi = Math.round(st.sr / 280)
+      const lo = Math.round(sr / 1400)
+      const hi = Math.round(sr / 280)
       lq = lq < lo ? lo : lq > hi ? hi : lq
     }
     const taper = lq >> 2
-    for (let i = lq; i <= FFT_N - lq; i++) {
+    for (let i = lq; i <= n - lq; i++) {
       cep[i] = 0
     }
     for (let i = lq - taper; i < lq; i++) {
       const w = 0.5 + 0.5 * Math.cos((Math.PI * (i - (lq - taper) + 1)) / (taper + 1))
       cep[i] *= w
-      cep[FFT_N - i] *= w
+      cep[n - i] *= w
     }
-    rfft_fwd(cep, st.w_re, st.w_im, spr, spi)
-    for (let k = 0; k <= HALF_N; k++) {
+    rfft_fwd(p, cep, spr, spi)
+    for (let k = 0; k <= half; k++) {
       env[k] = spr[k]
       if (spr[k] > tgt_a[k]) {
         tgt_a[k] = spr[k]
       }
     }
   }
-  const corr = st.corr
-  for (let k = 0; k <= HALF_N; k++) {
+  const corr = x.corr
+  for (let k = 0; k <= half; k++) {
     const si = k * pr
     let tgt: number
-    if (si >= HALF_N) {
-      tgt = env[HALF_N]
+    if (si >= half) {
+      tgt = env[half]
     } else {
       const i0 = si | 0
       const fr = si - i0
@@ -836,18 +855,34 @@ function pv_envelope(st: pv_t, n_ch: number, pr: number): void {
   }
 }
 
-function pv_aa(st: pv_t, ptot: number): void {
-  const aa = st.aa
+function pv_corr_map(dst: pvx_t, src: pvx_t): void {
+  const r = src.n / dst.n
+  const sh = src.half
+  for (let k = 0; k <= dst.kmax && k <= dst.half; k++) {
+    const si = k * r
+    const i0 = si | 0
+    if (i0 >= sh) {
+      dst.corr[k] = src.corr[sh]
+      continue
+    }
+    const fr = si - i0
+    dst.corr[k] = src.corr[i0] * (1 - fr) + src.corr[i0 + 1] * fr
+  }
+}
+
+function pv_aa(x: pvx_t, ptot: number): void {
+  const aa = x.aa
+  const half = x.half
   if (ptot <= 1.0005) {
     aa.fill(1)
     return
   }
-  const kc = Math.floor(HALF_N / ptot)
-  let k0 = kc - AA_ROLL
+  const kc = Math.floor(half / ptot)
+  let k0 = kc - Math.round((24 * half) / 1024)
   if (k0 < 1) {
     k0 = 1
   }
-  for (let k = 0; k <= HALF_N; k++) {
+  for (let k = 0; k <= half; k++) {
     if (k < k0) {
       aa[k] = 1
     } else if (k < kc) {
@@ -858,17 +893,87 @@ function pv_aa(st: pv_t, ptot: number): void {
   }
 }
 
-function pv_transient(st: pv_t, ch: chan_t): boolean {
-  const k0 = Math.round((1500 * FFT_N) / st.sr)
-  let e = 0
-  let ep = 0
-  for (let k = k0; k < HALF_N; k++) {
-    e += ch.mag[k] * ch.mag[k]
-    ep += ch.mag_p[k] * ch.mag_p[k]
+function pv_transient(x: pvx_t, n_ch: number, sr: number): boolean {
+  const half = x.half
+  const k0 = Math.round((1500 * x.n) / sr)
+  const c0 = x.chans[0]
+  const c1 = x.chans[1]
+  const two = n_ch > 1
+  let all = 0
+  let mx = 0
+  for (let k = 1; k < half; k++) {
+    const m = two ? c0.mag[k] + c1.mag[k] : c0.mag[k]
+    all += m * m
+    if (m > mx) {
+      mx = m
+    }
   }
-  const hit = e > 1e-7 && e > ep * 3.2 && e > st.e_prev * 0.5
-  st.e_prev = e
+  const floor = mx * 1e-3
+  let hf = 0
+  let rise = 0
+  for (let k = k0; k < half; k++) {
+    const m = two ? c0.mag[k] + c1.mag[k] : c0.mag[k]
+    if (m <= floor) {
+      continue
+    }
+    const mp = two ? c0.mag_p[k] + c1.mag_p[k] : c0.mag_p[k]
+    const e = m * m
+    hf += e
+    if (m > 2 * mp) {
+      rise += e
+    }
+  }
+  if (x.tr_hold > 0) {
+    x.tr_hold--
+  }
+  const hit = x.tr_hold === 0 && hf > all * 0.01 && rise > hf * 0.6 && all > x.e_prev * 1.4
+  x.e_prev = all
+  if (hit) {
+    x.tr_hold = 3
+  }
   return hit
+}
+
+function pv_synth(st: pv_t, x: pvx_t, n_ch: number, at: number): void {
+  const p = x.p
+  const half = x.half
+  const kmax = x.kmax
+  const corr = x.corr
+  const aa = x.aa
+  const band = x.band
+  const spr = x.spr
+  const spi = x.spi
+  const ob = x.ob
+  const hs = p.hann_s
+  const n = x.n
+  for (let c = 0; c < n_ch; c++) {
+    const ch = x.chans[c]
+    const ring = st.ring[c]
+    spr[0] = ch.dc * corr[0] * aa[0] * band[0]
+    spi[0] = 0
+    spr[half] = ch.nyq * corr[half] * aa[half] * band[half]
+    spi[half] = 0
+    for (let k = 1; k < half; k++) {
+      if (k >= kmax) {
+        spr[k] = 0
+        spi[k] = 0
+        continue
+      }
+      const g = ch.mag[k] * corr[k] * aa[k] * band[k]
+      if (g === 0) {
+        spr[k] = 0
+        spi[k] = 0
+        continue
+      }
+      const ph = ch.ph_s[k]
+      spr[k] = g * Math.cos(ph)
+      spi[k] = g * Math.sin(ph)
+    }
+    rfft_inv(p, spr, spi, ob)
+    for (let i = 0; i < n; i++) {
+      ring[(at + i) & RING_M] += ob[i] * hs[i]
+    }
+  }
 }
 
 function wander_step(st: pv_t, dt: number): void {
@@ -934,75 +1039,91 @@ function pv_grain(st: pv_t, hop_a: number, ident: boolean, ptot: number): void {
   const pr = st.pitch * st.w_pitch
   const need_formant = st.formant && Math.abs(pr - 1) > 0.002
   const fast = ident && !need_formant && ptot <= 1.0005
+  const hi = st.hi
+  const lo = st.lo
+  const base_lo = base - st.dir * LO_PRE
 
-  src_fill_ms(st, base)
-  const m = st.mid
-  const s = st.side
-  const r0 = st.ring[0]
-  const r1 = st.ring[1]
+  src_fill_lr(st, base_lo)
 
   if (fast) {
-    for (let i = 0; i < FFT_N; i++) {
-      r0[(sp + i) & RING_M] += m[i] * HANN_A[i]
+    const r0 = st.ring[0]
+    const r1 = st.ring[1]
+    const ha = hi.p.hann_a
+    const m = st.h0
+    const s = st.h1
+    for (let i = 0; i < N_HI; i++) {
+      r0[(sp + i) & RING_M] += m[i] * ha[i]
     }
     if (n_ch > 1) {
-      for (let i = 0; i < FFT_N; i++) {
-        r1[(sp + i) & RING_M] += s[i] * HANN_A[i]
+      for (let i = 0; i < N_HI; i++) {
+        r1[(sp + i) & RING_M] += s[i] * ha[i]
       }
     }
     st.fast_prev = true
+    lo.reset = true
   } else {
-    const c0 = st.chans[0]
-    const c1 = st.chans[1]
-    pv_analyze(st, c0, m)
+    const hop_in = Math.abs(base - st.last_base)
+    const reset_all =
+      st.reset || st.fast_prev || st.jump || ident || hop_in < 1 || hop_in > N_LO * 4
+    pv_analyze(hi, hi.chans[0], st.h0)
     if (n_ch > 1) {
-      pv_analyze(st, c1, s)
+      pv_analyze(hi, hi.chans[1], st.h1)
     }
-    const reset_all = st.reset || st.fast_prev || st.jump || ident
-    let reset_k0 = HALF_N
-    if (!reset_all && pv_transient(st, c0)) {
-      reset_k0 = Math.max(2, Math.round((500 * FFT_N) / st.sr))
+    let tr = false
+    if (!reset_all) {
+      tr = pv_transient(hi, n_ch, st.sr)
     }
-    pv_phase(st, c0, hop_a, reset_all, reset_k0)
+    const rk_hi = tr ? Math.max(2, Math.round((500 * N_HI) / st.sr)) : hi.half
+    pv_phase(hi, hi.chans[0], hop_in, reset_all, rk_hi)
     if (n_ch > 1) {
-      pv_phase(st, c1, hop_a, reset_all, reset_k0)
+      pv_phase(hi, hi.chans[1], hop_in, reset_all, rk_hi)
+      if (!reset_all) {
+        pv_stereo_lock(hi)
+      }
+    }
+    if (reset_all) {
+      lo.reset = true
+    }
+    if (tr) {
+      st.lo_tr = true
     }
     if (need_formant) {
-      pv_envelope(st, n_ch, pr)
+      pv_envelope(hi, n_ch, pr, st.sr)
     } else {
-      st.corr.fill(1)
+      hi.corr.fill(1)
     }
-    pv_aa(st, ptot)
-    const corr = st.corr
-    const aa = st.aa
-    const spr = st.sp_re
-    const spi = st.sp_im
-    const ob = st.ob
-    for (let c = 0; c < n_ch; c++) {
-      const ch = st.chans[c]
-      const ring = st.ring[c]
-      spr[0] = ch.dc * corr[0] * aa[0]
-      spi[0] = 0
-      spr[HALF_N] = ch.nyq * corr[HALF_N] * aa[HALF_N]
-      spi[HALF_N] = 0
-      for (let k = 1; k < HALF_N; k++) {
-        const g = ch.mag[k] * corr[k] * aa[k]
-        const ph = ch.ph_s[k]
-        spr[k] = g * Math.cos(ph)
-        spi[k] = g * Math.sin(ph)
+    pv_aa(hi, ptot)
+    pv_synth(st, hi, n_ch, sp)
+
+    if ((st.g_n & 1) === 0) {
+      const hop_lo = Math.abs(base_lo - lo.last_base)
+      const lo_reset = lo.reset || ident || hop_lo < 1 || hop_lo > N_LO * 4
+      pv_analyze(lo, lo.chans[0], st.b0)
+      if (n_ch > 1) {
+        pv_analyze(lo, lo.chans[1], st.b1)
       }
-      rfft_inv(spr, spi, st.w_re, st.w_im, ob)
-      for (let i = 0; i < FFT_N; i++) {
-        ring[(sp + i) & RING_M] += ob[i] * HANN_S[i]
+      const rk_lo = st.lo_tr ? Math.max(2, Math.round((500 * N_LO) / st.sr)) : lo.kmax
+      pv_phase(lo, lo.chans[0], hop_lo, lo_reset, rk_lo)
+      if (n_ch > 1) {
+        pv_phase(lo, lo.chans[1], hop_lo, lo_reset, rk_lo)
+        if (!lo_reset) {
+          pv_stereo_lock(lo)
+        }
       }
+      if (need_formant) {
+        pv_corr_map(lo, hi)
+      } else {
+        lo.corr.fill(1)
+      }
+      pv_aa(lo, ptot)
+      pv_synth(st, lo, n_ch, sp - LO_PRE)
+      lo.last_base = base_lo
+      lo.reset = false
+      st.lo_tr = false
     }
     st.fast_prev = false
   }
-  if (n_ch < 2) {
-    for (let i = 0; i < FFT_N; i++) {
-      r1[(sp + i) & RING_M] = 0
-    }
-  }
+  st.g_n++
   st.reset = false
   st.jump = false
 
@@ -1050,7 +1171,7 @@ function pv_pump(node: PvProcessor, st: pv_t, need_out: number, ptot: number): v
   const tp = st.tempo * st.w_tempo
   const hop_exact = (SYN_HOP * tp) / pr
   const ident = Math.abs(hop_exact - SYN_HOP) < 1e-6
-  const target = st.r_pos + need_out * ptot + RS_HALF + 2
+  const target = st.r_pos + need_out * ptot + RS_HALF + 2 + LO_PRE
   let produced = 0
   while (!st.draining && st.s_pos <= target && produced < MAX_GRAINS) {
     if (!pv_wrap(node, st)) {
@@ -1091,7 +1212,7 @@ function pv_read(
   const rr = st.ring[1]
   const stereo = src_n_ch(st) > 1
   const c = st.rs_c
-  const limit = st.draining ? st.s_pos + FFT_N - SYN_HOP - RS_HALF : Infinity
+  const limit = st.draining ? st.s_pos + N_LO - LO_PRE - SYN_HOP - RS_HALF : Infinity
   let rp = st.r_pos
   const exact = Math.abs(ptot - 1) < 1e-9 && rp === Math.floor(rp)
   let wrote = n
@@ -1124,8 +1245,8 @@ function pv_read(
         s += rr[idx] * c[j]
       }
     }
-    let l = stereo ? m + s : m
-    let r = stereo ? m - s : m
+    let l = m
+    let r = stereo ? s : m
     if (st.bt_head !== st.bt_tail && rp >= st.bt_q[st.bt_head]) {
       pv_click_start(st)
     }
@@ -1200,7 +1321,7 @@ function pv_msg(node: PvProcessor, st: pv_t, d: unknown): void {
       st.loop_s = -1
       st.loop_e = -1
       st.dir = f_num(o, 'dir', 1) < 0 ? -1 : 1
-      st.in_pos = st.dir > 0 ? -OFS : st.len - 1 + OFS
+      st.in_pos = st.dir > 0 ? -START : st.len - 1 + START
       pv_flush(st)
       node.port.postMessage({ type: 'loaded', dur: st.len / st.sr })
       break
@@ -1254,7 +1375,7 @@ function pv_msg(node: PvProcessor, st: pv_t, d: unknown): void {
     case 'play':
       if (st.len > 0) {
         if (st.draining) {
-          st.in_pos = st.dir > 0 ? -OFS : st.len - 1 + OFS
+          st.in_pos = st.dir > 0 ? -START : st.len - 1 + START
           pv_flush(st)
         }
         if (!st.playing || st.fade_out > 0) {
@@ -1275,7 +1396,7 @@ function pv_msg(node: PvProcessor, st: pv_t, d: unknown): void {
       st.playing = false
       st.fade_out = 0
       st.pause_after = false
-      st.in_pos = st.dir > 0 ? -OFS : st.len - 1 + OFS
+      st.in_pos = st.dir > 0 ? -START : st.len - 1 + START
       pv_flush(st)
       break
     case 'seek': {
